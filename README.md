@@ -2,7 +2,7 @@
 
 **Predictively Oriented (PrO) posteriors for [PyMC](https://www.pymc.io/).**
 
-Experimental package implementing particle-based PrO inference in PyMC models. The current release focuses on the **log-score** scoring rule and its **Wasserstein gradient flow (WGF)** sampler.
+Experimental package implementing particle-based PrO inference in PyMC models. The current implementation focuses on the **log-score** scoring rule and its **Wasserstein gradient flow (WGF)** sampler.
 
 ## Overview
 
@@ -45,8 +45,7 @@ with pm.Model() as model:
     mu = pm.Normal("mu", mu=0.0, sigma=1.0)
     pm.Normal("y", mu=mu, sigma=1.0, observed=y)
 
-result = sample_pro(model, n_particles=32, n_steps=500, random_seed=0)
-```
+    result = sample_pro(n_particles=32, n_steps=500, random_seed=0)```
 
 `result` is a `PrOResult` with particle traces and diagnostics. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, and `step_size` for your model.
 
