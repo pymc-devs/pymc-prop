@@ -11,16 +11,14 @@ def initialize_particles(
     rng: np.random.Generator,
     jitter: float = 0.1,
 ) -> np.ndarray:
-    """Jittered particles around a shared center in flat ``value_vars`` space.
+    """Place particles around a shared flat start with Gaussian jitter.
 
-    Each particle is ``start + jitter * N(0, I)``. This shared-center plus
-    Gaussian spread supports the finite-:math:`p` leave-one-out mixture
+    ``start`` is typically the raveled PyMC ``initial_point()`` (prior-centred
+    values in unconstrained ``value_vars`` space). Each row is
+    ``start + jitter * N(0, I)``, giving a finite-:math:`p` cloud for the
+    leave-one-out mixture
     :math:`Q_t^{(j)} \\approx \\frac{1}{p-1}\\sum_{\\ell\\neq j}
-    \\delta_{\\vartheta^{(\\ell)}}` used in the log-score WGF (McLatchie
-    et al., 2025, Sec. 5; appendix “Practicalities and Implementation”).
-
-    This is **not** prior sampling; the paper sometimes initializes from
-    the prior in experiments -- that remains a future option here.
+    \\delta_{\\vartheta^{(\\ell)}}` (McLatchie et al., 2025, Sec. 5).
     """
     base = np.asarray(start, dtype=float)
     noise = jitter * rng.standard_normal(size=(n_particles, base.size))

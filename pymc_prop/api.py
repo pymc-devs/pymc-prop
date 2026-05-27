@@ -26,6 +26,11 @@ def sample_pro(
 
     Parameters
     ----------
+    burn_in
+        EM steps to discard before retaining snapshots.
+    thinning
+        After ``burn_in``, keep every ``thinning``-th EM iterate (deterministic
+        stride along the discretised flow).
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in

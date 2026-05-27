@@ -18,8 +18,9 @@ class PointMapper:
     """Bidirectional map between PyMC ``value_vars`` points and flat particles.
 
     Particles live in unconstrained ``value_vars`` space (state
-    :math:`\\vartheta^{(j)} \\in \\Theta` in Sec. 5 of McLatchie et al. 2025).
-    ``start_point`` is typically ``model.initial_point()`` in ``value_vars`` order.
+    :math:`\\vartheta^{(j)} \\in \\Theta`, McLatchie et al. 2025, Sec. 5).
+    ``start_point`` comes from ``model.initial_point()``: prior-centred values
+    in ``value_vars`` order after PyMC transforms.
     """
 
     start_point: PointType

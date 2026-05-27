@@ -11,7 +11,7 @@ from pymc_prop.compile import compile_drift_for_logscore
 from pymc_prop.points import PointMapper
 
 
-DriftReturn = tuple[np.ndarray, np.ndarray, float, float]
+DriftReturn = tuple[np.ndarray, np.ndarray]
 
 
 class ScoringRule:
@@ -46,7 +46,7 @@ class LogScore(ScoringRule):
         def wgf(particles: np.ndarray) -> np.ndarray:
             if particles.shape[0] < 2:
                 raise ValueError("Log-score WGF requires at least two particles.")
-            wgf_grad, _prior_grad, _clip_count, _nonfinite_logp = drift_fn(particles)
+            wgf_grad, _prior_grad = drift_fn(particles)
             return wgf_grad
 
         return wgf

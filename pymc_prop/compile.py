@@ -19,7 +19,7 @@ PointFunc = Callable[[dict[str, np.ndarray]], np.ndarray]
 FlatGradFunc = Callable[[np.ndarray], np.ndarray]
 BatchedLogpScoreFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 BatchedGradFunc = Callable[[np.ndarray], np.ndarray]
-DriftFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]
+DriftFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
 
 def _sum_logp_terms(logp_terms: Sequence[pt.TensorVariable]) -> pt.TensorVariable:
@@ -278,10 +278,6 @@ def compile_drift_for_logscore(
         Shape ``(n_particles, n_params)``.
     prior_grad
         Shape ``(n_particles, n_params)``.
-    clip_count
-        Scalar count of clipped log-ratio entries (debug).
-    nonfinite_logp
-        Scalar count of non-finite observed logp entries (debug).
     """
     model = modelcontext(model)
     if not model.observed_RVs:
@@ -317,13 +313,9 @@ def compile_drift_for_logscore(
     # Wasserstein interaction term: shape (num_particles, dim)
     wgf_grad = -pt.mean(ratio[:, :, None] * score, axis=1)
 
-    # debug scalars carried in-graph (cheap counts)
-    clip_count = pt.sum(pt.gt(pt.abs(log_ratio_raw), log_ratio_clip))
-    nonfinite_logp = pt.sum(pt.or_(pt.isnan(logp), pt.isinf(logp)))
-
     return model.compile_fn(
         inputs=[particles],
-        outs=[wgf_grad, prior_grad, clip_count, nonfinite_logp],
+        outs=[wgf_grad, prior_grad],
         point_fn=False,
         on_unused_input="ignore",
     )

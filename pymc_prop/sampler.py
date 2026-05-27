@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import List
 
@@ -22,11 +21,13 @@ from pymc_prop.scoring import LogScore, ScoringRule
 class PrOResult:
     """Interim sampler output; ArviZ ``InferenceData`` planned (D5).
 
-    Retained snapshots approximate :math:`\\widehat{Q}[t_i]` after burn-in
-    and thinning (McLatchie et al., 2025, Sec. 5).
+    ``particles`` has shape ``(n_snapshots, n_particles, n_params)``. Each
+    snapshot is the empirical measure :math:`\\widehat{Q}[t_i]`,
+    kept at deterministic EM steps after ``burn_in``
+    (every ``thinning``-th iterate).
     """
 
-    particles: np.ndarray  # (n_snapshots, n_particles, n_params)
+    particles: np.ndarray
 
 
 def run_sampler(
@@ -41,6 +42,11 @@ def run_sampler(
     learning_rate: float | None,
     random_seed: int | None,
 ) -> PrOResult:
+    """Run the PrO particle EM loop.
+
+    After ``burn_in`` steps, retains the full particle cloud every ``thinning``
+    EM iterates (deterministic stride along the discretised flow).
+    """
     rng = np.random.default_rng(random_seed)
 
     # Sec. 5: particles in unconstrained value_vars space (mapper + jittered init)
@@ -65,14 +71,7 @@ def run_sampler(
 
     for step in range(n_steps):
         if drift_fn is not None:
-            wgf_grad, prior_grad, clip_count, nonfinite_logp = drift_fn(particles)
-            if clip_count > 0 or nonfinite_logp > 0:
-                warnings.warn(
-                    f"Log-score drift debug scalars at step {step}: "
-                    f"clip_count={clip_count}, nonfinite_logp={nonfinite_logp}",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            wgf_grad, prior_grad = drift_fn(particles)
         else:
             wgf_grad = wgf_fn(particles)
             assert batched_prior_grad_fn is not None
