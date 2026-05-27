@@ -21,7 +21,7 @@ from pymc_prop.scoring import LogScore, ScoringRule
 class PrOResult:
     """Interim sampler output; ArviZ ``InferenceData`` planned (D5).
 
-    ``particles`` has shape ``(n_snapshots, n_particles, n_params)``. Each
+    ``particles`` has shape ``(n_samples, n_particles, n_params)``. Each
     snapshot is the empirical measure :math:`\\widehat{Q}[t_i]`,
     kept at deterministic EM steps after ``burn_in``
     (every ``thinning``-th iterate).
