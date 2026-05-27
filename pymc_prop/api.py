@@ -30,8 +30,7 @@ def sample_pro(
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
         McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). If ``None``, uses
-        ``sqrt(n_obs)`` as a simple default, not the full theory rate
-        (:math:`\\lambda_n \\asymp n^{1/2}` up to log factors in the appendix).
+        ``sqrt(n_obs)`` as the default value.
     """
     model = modelcontext(model)
 
