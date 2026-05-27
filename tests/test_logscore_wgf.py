@@ -42,7 +42,7 @@ def test_logscore_wgf_matches_manual():
     mapper = make_point_mapper(model)
     logscore = LogScore(log_ratio_clip=50.0)
     wgf_fn = logscore.compile_wgf(model, mapper)
-    wgf, _ = wgf_fn(particles, diagnostics=False)
+    wgf = wgf_fn(particles)
 
     manual = _manual_wgf(particles, y, sigma, log_ratio_clip=50.0)
     np.testing.assert_allclose(wgf, manual, rtol=1e-5, atol=1e-6)

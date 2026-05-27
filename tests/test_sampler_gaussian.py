@@ -20,10 +20,8 @@ def test_sample_pro_runs_gaussian():
         thinning=5,
         step_size=5e-3,
         random_seed=123,
-        diag_stride=5,
     )
 
     assert result.particles.ndim == 3
     assert result.particles.shape[1] == 8
     assert np.all(np.isfinite(result.particles))
-    assert np.all(result.diagnostics["spread_mean"] > 0.0)

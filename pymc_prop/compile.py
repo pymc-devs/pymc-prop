@@ -253,7 +253,36 @@ def compile_drift_for_logscore(
     eps: float = 1e-300,
     jacobian: bool = True,
 ) -> DriftFunc:
-    """Compile fused log-score WGF and prior gradients for a particle batch."""
+    """Compile fused batched log-score drift for one EM step.
+
+    For particle :math:`j`, evaluates the log-score Wasserstein term
+    :math:`\\mathcal{W}(Q^{(j)})` (McLatchie et al., 2025, appendix
+    “Examples: MMD and logarithmic score”) using the finite-:math:`p`
+    leave-one-out mixture
+
+    .. math::
+
+        Q_t^{(j)} \\approx \\frac{1}{p-1}\\sum_{\\ell\\neq j}
+        \\delta_{\\vartheta^{(\\ell)}},
+
+    with mixture log-density computed via log-sum-exp over the batch.
+    Per-observation log-likelihood ratios are clipped before exponentiating;
+    the interaction drift is ``wgf_grad = -mean(ratio * score, axis=obs)``.
+
+    Also compiles batched prior score gradients
+    :math:`\\nabla_{\\vartheta}\\log\\pi(\\vartheta)` for the same particles.
+
+    Returns
+    -------
+    wgf_grad
+        Shape ``(n_particles, n_params)``.
+    prior_grad
+        Shape ``(n_particles, n_params)``.
+    clip_count
+        Scalar count of clipped log-ratio entries (debug).
+    nonfinite_logp
+        Scalar count of non-finite observed logp entries (debug).
+    """
     model = modelcontext(model)
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
@@ -288,7 +317,7 @@ def compile_drift_for_logscore(
     # Wasserstein interaction term: shape (num_particles, dim)
     wgf_grad = -pt.mean(ratio[:, :, None] * score, axis=1)
 
-    # diagnostics carried in-graph (cheap scalars)
+    # debug scalars carried in-graph (cheap counts)
     clip_count = pt.sum(pt.gt(pt.abs(log_ratio_raw), log_ratio_clip))
     nonfinite_logp = pt.sum(pt.or_(pt.isnan(logp), pt.isinf(logp)))
 

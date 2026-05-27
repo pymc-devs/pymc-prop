@@ -15,7 +15,12 @@ PointType = Dict[str, np.ndarray]
 
 @dataclass
 class PointMapper:
-    """Bidirectional map between PyMC value-space points and flat particles."""
+    """Bidirectional map between PyMC ``value_vars`` points and flat particles.
+
+    Particles live in unconstrained ``value_vars`` space (state
+    :math:`\\vartheta^{(j)} \\in \\Theta` in Sec. 5 of McLatchie et al. 2025).
+    ``start_point`` is typically ``model.initial_point()`` in ``value_vars`` order.
+    """
 
     start_point: PointType
     point_map_info: tuple
@@ -49,7 +54,12 @@ def flat_to_value_vars(
 
 
 def make_point_mapper(model=None) -> PointMapper:
-    """Build a mapper using PyMC's unconstrained ``value_vars`` ordering."""
+    """Build a :class:`PointMapper` from ``model.initial_point()`` and ``value_vars``.
+
+    Ravel/unravel uses PyMC's :class:`~pymc.blocking.DictToArrayBijection` so particle
+    coordinates match the unconstrained parameterisation used in the WGF (Sec. 5,
+    McLatchie et al. 2025, https://arxiv.org/abs/2510.01915).
+    """
     model = modelcontext(model)
     start_point = model.initial_point()
     ordered_point = {var.name: np.asarray(start_point[var.name]) for var in model.value_vars}

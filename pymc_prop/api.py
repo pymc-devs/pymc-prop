@@ -19,10 +19,20 @@ def sample_pro(
     burn_in: int = 200,
     thinning: int = 1,
     step_size: float = 1e-3,
-    lambda_n: float | None = None,
+    learning_rate: float | None = None,
     random_seed: int | None = None,
-    diag_stride: int = 10,
 ) -> PrOResult:
+    """Run the PrO particle sampler on a PyMC model.
+
+    Parameters
+    ----------
+    learning_rate
+        Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
+        :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
+        McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). If ``None``, uses
+        ``sqrt(n_obs)`` as a simple default, not the full theory rate
+        (:math:`\\lambda_n \\asymp n^{1/2}` up to log factors in the appendix).
+    """
     model = modelcontext(model)
 
     if n_particles < 2:
@@ -50,7 +60,6 @@ def sample_pro(
         burn_in=burn_in,
         thinning=thinning,
         step_size=step_size,
-        lambda_n=lambda_n,
+        learning_rate=learning_rate,
         random_seed=random_seed,
-        diag_stride=diag_stride,
     )

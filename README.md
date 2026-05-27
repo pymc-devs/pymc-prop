@@ -47,7 +47,7 @@ with pm.Model() as model:
 
     result = sample_pro(n_particles=32, n_steps=500, random_seed=0)```
 
-`result` is a `PrOResult` with particle traces and diagnostics. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, and `step_size` for your model.
+`result` is a `PrOResult` with particle traces. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, `step_size`, and `learning_rate` for your model.
 
 ## API
 
