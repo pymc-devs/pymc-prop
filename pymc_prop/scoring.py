@@ -26,13 +26,13 @@ class ScoringRule:
 
 @dataclass
 class LogScore(ScoringRule):
-    """Log-score WGF with leave-one-out mixture weights."""
+    """Log-score scoring rule (LOO mixture WGF)."""
 
     log_ratio_clip: float = 10.0
     eps: float = 1e-300
 
     def compile_drift(self, model, mapper: PointMapper) -> Callable[[np.ndarray], DriftReturn]:
-        """Fused batched WGF and prior gradients."""
+        # interaction drift + log prior gradient per particle (see compile.py)
         return compile_drift_for_logscore(
             mapper,
             model,
@@ -44,6 +44,7 @@ class LogScore(ScoringRule):
         drift_fn = self.compile_drift(model, mapper)
 
         def wgf(particles: np.ndarray) -> np.ndarray:
+            # interaction drift only (drops prior term)
             if particles.shape[0] < 2:
                 raise ValueError("Log-score WGF requires at least two particles.")
             wgf_grad, _prior_grad = drift_fn(particles)

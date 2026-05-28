@@ -24,6 +24,11 @@ dependencies = [
 test = [
   "pytest",
 ]
+examples = [
+  "matplotlib",
+  "jupyter",
+  "ipykernel",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

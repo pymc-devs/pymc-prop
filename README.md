@@ -70,6 +70,10 @@ Import from `pymc_prop`:
 
 Only `scoring_rule="log"` is supported in this version.
 
+## Examples
+
+The [bimodal Gaussian location notebook](examples/bimodal_gaussian.ipynb) runs PrO on an independent two-component mixture example.
+
 ## Development
 
 ```bash

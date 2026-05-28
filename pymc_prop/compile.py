@@ -30,6 +30,7 @@ def _sum_logp_terms(logp_terms: Sequence[pt.TensorVariable]) -> pt.TensorVariabl
 
 
 def compile_observed_logp(model=None) -> PointFunc:
+    """Elementwise observed logp; output shape ``(n_obs,)`` (not summed)."""
     model = modelcontext(model)
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
@@ -45,6 +46,7 @@ def compile_observed_logp(model=None) -> PointFunc:
 
 
 def compile_observed_score(model=None) -> PointFunc:
+    """Per-observation score rows via ``jacobian``; shape ``(n_obs, n_params)``."""
     model = modelcontext(model)
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
@@ -127,6 +129,7 @@ def _core_prior_grad(
     value_vars = model.value_vars
     mapped_value_vars = flat_to_value_vars(particle_flat, mapper.point_map_info)
     replace = dict(zip(value_vars, mapped_value_vars, strict=True))
+    # log prior gradient (prior term)
     logp_prior = model.logp(vars=model.free_RVs, jacobian=jacobian_terms, sum=True)
     prior_grad = gradient(logp_prior, value_vars)
     prior_grad = graph_replace(prior_grad, replace=replace, strict=False)
@@ -292,6 +295,7 @@ def compile_drift_for_logscore(
 
     particles = pt.matrix("particles")
     try:
+        # per particle: log p(y_i), score rows, log prior gradient
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=False)
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=False
@@ -302,7 +306,7 @@ def compile_drift_for_logscore(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True
         )
 
-    # leave-one-out mixture log density (log-space, numerically stable)
+    # LOO mixture log-density Q_t^{(j)}
     logp_max = pt.max(logp, axis=0, keepdims=True)
     exp_shifted = pt.exp(logp - logp_max)
     sum_all = pt.sum(exp_shifted, axis=0, keepdims=True)
@@ -310,11 +314,13 @@ def compile_drift_for_logscore(
 
     denom = pt.cast(particles.shape[0] - 1, logp.dtype)
     log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)
+    # log importance weights vs mixture
     log_ratio_raw = logp - log_mix
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
     ratio = pt.exp(log_ratio)
-    # Wasserstein interaction term: shape (num_particles, dim)
+    # interaction drift (Wasserstein / log-score term W)
     wgf_grad = -pt.mean(ratio[:, :, None] * score, axis=1)
+    # prior_grad already holds log prior gradient (prior term in em_step)
 
     return model.compile_fn(
         inputs=[particles],
