@@ -77,10 +77,6 @@ def require_unconstrained_free_rvs(model=None) -> None:
 
 def make_point_mapper(model=None) -> PointMapper:
     """Build a :class:`PointMapper` from ``model.initial_point()`` and ``value_vars``.
-
-    Ravel/unravel uses PyMC's :class:`~pymc.blocking.DictToArrayBijection` so particle
-    coordinates match the unconstrained parameterisation used in the WGF (Sec. 5,
-    McLatchie et al. 2025, https://arxiv.org/abs/2510.01915).
     """
     model = modelcontext(model)
     require_unconstrained_free_rvs(model)
