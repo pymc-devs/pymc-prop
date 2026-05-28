@@ -6,16 +6,6 @@ from pymc_prop.compile import compile_prior_gradient
 from pymc_prop.points import make_point_mapper
 
 
-def _central_diff_prior(logp_fn, mapper, base, index, eps=1e-5):
-    up = base.copy()
-    dn = base.copy()
-    up[index] += eps
-    dn[index] -= eps
-    pup = logp_fn(mapper.unravel(up))
-    pdn = logp_fn(mapper.unravel(dn))
-    return (float(pup) - float(pdn)) / (2.0 * eps)
-
-
 def test_prior_gradient_gaussian_closed_form():
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=2.0)
@@ -31,21 +21,12 @@ def test_prior_gradient_gaussian_closed_form():
     np.testing.assert_allclose(grad, expected, rtol=1e-6, atol=1e-8)
 
 
-def test_prior_gradient_halfnormal_transform():
+def test_prior_gradient_rejects_halfnormal():
     with pm.Model() as model:
-        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
-        sigma = pm.HalfNormal("sigma", sigma=1.0)
-        pm.Normal("y", mu=mu, sigma=sigma, observed=np.array([0.0, 0.5]))
+        pm.HalfNormal("sigma", sigma=1.0)
 
-    mapper = make_point_mapper(model)
-    grad_fn = compile_prior_gradient(model)
-    logp_fn = model.compile_logp(vars=model.free_RVs, jacobian=True)
-
-    base = mapper.ravel(mapper.start_point)
-    grad = grad_fn(mapper.start_point)
-
-    fd = np.array([_central_diff_prior(logp_fn, mapper, base, i) for i in range(base.size)])
-    np.testing.assert_allclose(grad, fd, rtol=1e-4, atol=1e-5)
+    with pytest.raises(ValueError, match="native unconstrained"):
+        compile_prior_gradient(model)
 
 
 def test_prior_gradient_rejects_discrete():

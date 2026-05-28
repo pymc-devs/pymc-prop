@@ -54,6 +54,27 @@ def flat_to_value_vars(
     return out
 
 
+def require_unconstrained_free_rvs(model=None) -> None:
+    """Require free RVs without PyMC's default constrained-space transforms.
+
+    TODO: ``model`` has free RVs with implicit transforms are
+    rejected until the change-of-variables story for PrO WGF on transformed
+    parameters is documented.
+    """
+    model = modelcontext(model)
+    transformed = [
+        rv.name
+        for rv in model.free_RVs
+        if model.rvs_to_transforms[rv] is not None
+    ]
+    if transformed:
+        names = ", ".join(repr(n) for n in transformed)
+        raise ValueError(
+            "PrO sampling requires native unconstrained free RVs; "
+            f"found transformed: [{names}]. "
+        )
+
+
 def make_point_mapper(model=None) -> PointMapper:
     """Build a :class:`PointMapper` from ``model.initial_point()`` and ``value_vars``.
 
@@ -62,6 +83,7 @@ def make_point_mapper(model=None) -> PointMapper:
     McLatchie et al. 2025, https://arxiv.org/abs/2510.01915).
     """
     model = modelcontext(model)
+    require_unconstrained_free_rvs(model)
     start_point = model.initial_point()
     ordered_point = {var.name: np.asarray(start_point[var.name]) for var in model.value_vars}
     raveled = DictToArrayBijection.map(ordered_point)

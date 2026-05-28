@@ -64,6 +64,7 @@ Import from `pymc_prop`:
 **Conventions**
 
 - Particles live in PyMC’s unconstrained `value_vars` coordinates (via `PointMapper` / `DictToArrayBijection`).
+- Free RVs must be native unconstrained; reparameterize manually for now.
 - Observed log-probability is **elementwise** — one term per observation, not a single summed likelihood.
 - Log-score sampling requires **continuous** value variables.
 

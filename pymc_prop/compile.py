@@ -12,7 +12,7 @@ from pytensor.scan import scan
 from pymc.model import modelcontext
 from pymc.pytensorf import gradient, jacobian
 
-from pymc_prop.points import PointMapper, flat_to_value_vars
+from pymc_prop.points import PointMapper, flat_to_value_vars, require_unconstrained_free_rvs
 
 
 PointFunc = Callable[[dict[str, np.ndarray]], np.ndarray]
@@ -50,6 +50,7 @@ def compile_observed_score(model=None) -> PointFunc:
         raise ValueError("Model has no observed variables.")
     if model.discrete_value_vars:
         raise ValueError("Observed score requires continuous value variables.")
+    require_unconstrained_free_rvs(model)
 
     value_vars = model.value_vars
 
@@ -71,6 +72,7 @@ def compile_prior_gradient(model=None, *, jacobian: bool = True) -> PointFunc:
         raise ValueError("Prior gradient requires continuous value variables.")
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
+    require_unconstrained_free_rvs(model)
 
     # prior term: free RVs only (not the joint logp)
     logp_prior = model.logp(vars=model.free_RVs, jacobian=jacobian, sum=True)
@@ -286,6 +288,7 @@ def compile_drift_for_logscore(
         raise ValueError("Log-score requires continuous value variables.")
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
+    require_unconstrained_free_rvs(model)
 
     particles = pt.matrix("particles")
     try:

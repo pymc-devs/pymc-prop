@@ -23,6 +23,9 @@ def sample_pro(
     random_seed: int | None = None,
 ) -> PrOResult:
     """Run the PrO particle sampler on a PyMC model.
+    
+    Free RVs must be native unconstrained; reparameterize manually
+    for now.
 
     Parameters
     ----------

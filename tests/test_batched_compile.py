@@ -15,9 +15,10 @@ from pymc_prop.points import flat_to_value_vars, make_point_mapper
 
 def test_flat_to_value_vars_matches_mapper_unravel():
     with pm.Model() as model:
-        pm.Normal("mu", mu=0.0, sigma=1.0)
-        pm.HalfNormal("sigma", sigma=1.0)
-        pm.Normal("y", mu=0.0, sigma=1.0, observed=np.array([0.1, -0.2]))
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        log_sigma = pm.Normal("log_sigma", mu=0.0, sigma=1.0)
+        sigma = pm.Deterministic("sigma", pt.exp(log_sigma))
+        pm.Normal("y", mu=mu, sigma=sigma, observed=np.array([0.1, -0.2]))
 
     mapper = make_point_mapper(model)
     particles = pt.matrix("particles")
@@ -40,7 +41,8 @@ def test_batched_observed_logp_score_matches_loop():
     y = rng.normal(0.0, 1.0, size=10)
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
-        sigma = pm.HalfNormal("sigma", sigma=1.0)
+        log_sigma = pm.Normal("log_sigma", mu=0.0, sigma=1.0)
+        sigma = pm.Deterministic("sigma", pt.exp(log_sigma))
         pm.Normal("y", mu=mu, sigma=sigma, observed=y)
 
     mapper = make_point_mapper(model)
@@ -66,7 +68,8 @@ def test_batched_observed_logp_score_matches_loop():
 def test_batched_prior_grad_matches_loop():
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=2.0)
-        sigma = pm.HalfNormal("sigma", sigma=1.0)
+        log_sigma = pm.Normal("log_sigma", mu=0.0, sigma=1.0)
+        sigma = pm.Deterministic("sigma", pt.exp(log_sigma))
         pm.Normal("y", mu=mu, sigma=sigma, observed=np.array([0.0, 0.4]))
 
     mapper = make_point_mapper(model)
