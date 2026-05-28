@@ -49,7 +49,7 @@ def compile_observed_score(model=None) -> PointFunc:
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
     if model.discrete_value_vars:
-        raise ValueError("Observed score requires continuous value variables.")
+        raise ValueError("Predictive score requires continuous model parameters.")
     require_unconstrained_free_rvs(model)
 
     value_vars = model.value_vars
@@ -189,7 +189,7 @@ def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None =
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
     if model.discrete_value_vars:
-        raise ValueError("Observed score requires continuous value variables.")
+        raise ValueError("Predictive score requires continuous model parameters.")
 
     particles = pt.matrix("particles")
     try:
