@@ -7,6 +7,7 @@ from pymc_prop.points import make_point_mapper
 
 
 def test_prior_gradient_gaussian_closed_form():
+    # ∇_μ log π(μ) for μ ~ N(0, 4): should be -μ/4 (free RVs only, no likelihood)
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=2.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=np.array([0.2, -0.1]))
@@ -22,6 +23,7 @@ def test_prior_gradient_gaussian_closed_form():
 
 
 def test_prior_gradient_rejects_halfnormal():
+    # implicit HalfNormal transform → require_unconstrained_free_rvs rejects
     with pm.Model() as model:
         pm.HalfNormal("sigma", sigma=1.0)
 
@@ -30,6 +32,7 @@ def test_prior_gradient_rejects_halfnormal():
 
 
 def test_prior_gradient_rejects_discrete():
+    # log-score / prior grad path needs continuous value_vars
     with pm.Model() as model:
         pm.Categorical("k", p=np.array([0.5, 0.5]))
 

@@ -41,12 +41,22 @@ def flat_to_value_vars(
     """Map a flat particle vector to PyMC ``value_vars`` tensors."""
     out: list[pt.TensorVariable] = []
     start = 0
-    batch_shape = flat_particles.shape[:-1]  # () for one particle, (p,) for a batch
+    # flat_particles may be a 1-D vector (single particle) or a 2-D matrix
+    # (batch, dim). Construct target shape explicitly to avoid ambiguous
+    # concatenation of Python-level shape tuples with tensor shapes that
+    # can produce symbolic Squeeze/Subtensor nodes during graph rewrites.
     for _name, shape, size, _dtype in point_map_info:
         stop = start + size
         part = flat_particles[..., start:stop]
         shape_tail = pt.as_tensor(np.asarray(shape, dtype="int64"))
-        target_shape = pt.concatenate([batch_shape, shape_tail], axis=0)
+        # Single particle (1-D) or one batch axis (2-D matrix) only; ndim is
+        # fixed at graph build time (scan rows vs batched compile).
+        if flat_particles.ndim == 1:
+            target_shape = shape_tail
+        else:
+            batch_size = pt.shape(flat_particles)[0]
+            batch_size_vec = pt.reshape(batch_size, (1,))
+            target_shape = pt.concatenate([batch_size_vec, shape_tail], axis=0)
         ndim = flat_particles.ndim - 1 + len(shape)
         part = pt.reshape(part, target_shape, ndim=ndim)
         out.append(part)

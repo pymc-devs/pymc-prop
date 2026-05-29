@@ -40,7 +40,8 @@ def compile_observed_logp(model=None) -> PointFunc:
         logp_terms = [logp_terms]
 
     logp_vec = _sum_logp_terms(logp_terms)
-    logp_vec = pt.reshape(logp_vec, (-1,))
+    # use flatten to avoid reshaping with a symbolic -1 dimension
+    logp_vec = pt.flatten(logp_vec)
 
     return model.compile_fn(inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore")
 
@@ -61,7 +62,8 @@ def compile_observed_score(model=None) -> PointFunc:
         logp_terms = [logp_terms]
 
     logp_vec = _sum_logp_terms(logp_terms)
-    logp_vec = pt.reshape(logp_vec, (-1,))
+    # ensure a 1-D vector of per-observation logp
+    logp_vec = pt.flatten(logp_vec)
 
     scores = jacobian(logp_vec, value_vars)
     return model.compile_fn(inputs=value_vars, outs=scores, on_unused_input="ignore")
@@ -115,7 +117,7 @@ def _core_observed_logp_score(
     if not isinstance(logp_terms, (list, tuple)):
         logp_terms = [logp_terms]
 
-    logp_vec = pt.reshape(_sum_logp_terms(logp_terms), (-1,))
+    logp_vec = pt.flatten(_sum_logp_terms(logp_terms))
     # score matrix: one row per observation
     score_mat = jacobian(logp_vec, value_vars)
     logp_vec, score_mat = graph_replace([logp_vec, score_mat], replace=replace, strict=False)
@@ -133,7 +135,8 @@ def _core_prior_grad(
     logp_prior = model.logp(vars=model.free_RVs, jacobian=jacobian_terms, sum=True)
     prior_grad = gradient(logp_prior, value_vars)
     prior_grad = graph_replace(prior_grad, replace=replace, strict=False)
-    return pt.reshape(prior_grad, (-1,))
+    # flatten prior gradient vector to 1-D
+    return pt.flatten(prior_grad)
 
 
 def _batched_observed_logp_score_graph(
