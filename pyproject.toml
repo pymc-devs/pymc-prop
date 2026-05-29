@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pymc-pro"
+name = "pymc-prop"
 version = "0.0.0"
 description = "Predictively Oriented posteriors for PyMC"
 readme = "README.md"
@@ -28,6 +28,7 @@ examples = [
   "matplotlib",
   "jupyter",
   "ipykernel",
+  "seaborn",
 ]
 
 [tool.pytest.ini_options]

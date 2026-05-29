@@ -1,4 +1,4 @@
-# pymc-pro
+# pymc-prop
 
 **Predictively Oriented (PrO) posteriors for [PyMC](https://www.pymc.io/).**
 
