@@ -1,4 +1,4 @@
-"""Public API for sampling PrO posteriors."""
+"""Public sampling entry for PrO posteriors (PyMC-style ``sample`` module)."""
 
 from __future__ import annotations
 

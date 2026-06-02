@@ -1,7 +1,7 @@
 import numpy as np
 import pymc as pm
 
-from pymc_prop.api import sample_pro
+from pymc_prop.sample import sample_pro
 
 
 def test_sample_pro_runs_gaussian():
