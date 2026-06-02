@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Sequence
+from typing import Callable
 
 import numpy as np
 import pytensor.tensor as pt
@@ -22,13 +22,6 @@ BatchedGradFunc = Callable[[np.ndarray], np.ndarray]
 DriftFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
 
-def _sum_logp_terms(logp_terms: Sequence[pt.TensorVariable]) -> pt.TensorVariable:
-    logp = pt.as_tensor(logp_terms[0])
-    for term in logp_terms[1:]:
-        logp = logp + pt.as_tensor(term)
-    return logp
-
-
 def compile_observed_logp(model=None) -> PointFunc:
     """Elementwise observed logp; output shape ``(n_obs,)`` (not summed)."""
     model = modelcontext(model)
@@ -36,12 +29,7 @@ def compile_observed_logp(model=None) -> PointFunc:
         raise ValueError("Model has no observed variables.")
 
     logp_terms = model.logp(vars=model.observed_RVs, sum=False)
-    if not isinstance(logp_terms, (list, tuple)):
-        logp_terms = [logp_terms]
-
-    logp_vec = _sum_logp_terms(logp_terms)
-    # use flatten to avoid reshaping with a symbolic -1 dimension
-    logp_vec = pt.flatten(logp_vec)
+    logp_vec = pt.flatten(pt.add(*logp_terms))
 
     return model.compile_fn(inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore")
 
@@ -58,10 +46,7 @@ def compile_observed_score(model=None) -> PointFunc:
     value_vars = model.value_vars
 
     logp_terms = model.logp(vars=model.observed_RVs, sum=False)
-    if not isinstance(logp_terms, (list, tuple)):
-        logp_terms = [logp_terms]
-
-    logp_vec = _sum_logp_terms(logp_terms)
+    logp_vec = pt.flatten(pt.add(*logp_terms))
     # ensure a 1-D vector of per-observation logp
     logp_vec = pt.flatten(logp_vec)
 
@@ -112,12 +97,8 @@ def _core_observed_logp_score(
     mapped_value_vars = flat_to_value_vars(particle_flat, mapper.point_map_info)
     replace = dict(zip(value_vars, mapped_value_vars, strict=True))
 
-    # elementwise observed log-probability
     logp_terms = model.logp(vars=model.observed_RVs, sum=False)
-    if not isinstance(logp_terms, (list, tuple)):
-        logp_terms = [logp_terms]
-
-    logp_vec = pt.flatten(_sum_logp_terms(logp_terms))
+    logp_vec = pt.flatten(pt.add(*logp_terms))
     # score matrix: one row per observation
     score_mat = jacobian(logp_vec, value_vars)
     logp_vec, score_mat = graph_replace([logp_vec, score_mat], replace=replace, strict=False)
@@ -198,8 +179,10 @@ def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None =
         raise ValueError("Predictive score requires continuous model parameters.")
 
     particles = pt.matrix("particles")
+    # Prefer pt.vectorize over the particle batch; if graph construction fails
+    # (PyTensor cannot vectorize this model's logp/score subgraph), fall back
+    # to scan over rows. This runs at compile time, not each EM step.
     try:
-        # prefer vectorised batching; fall back to scan if needed
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=False)
         return model.compile_fn(
             inputs=[particles],
@@ -231,6 +214,7 @@ def compile_batched_prior_grad(
         raise ValueError("Model has no free random variables.")
 
     particles = pt.matrix("particles")
+    # Prefer pt.vectorize; fall back to scan at compile time if vectorization fails.
     try:
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=False
@@ -267,7 +251,7 @@ def compile_drift_for_logscore(
 
         \\mathrm{d}\\vartheta_t^{(j)}
         = -\\Bigl\\{
-          \\frac{\\lambda_n}{n} \\sum_i
+          \\lambda_n \\sum_i
           \\frac{\\nabla_\\vartheta\\, p_{\\vartheta^{(j)}}(x_i)}
           {\\frac{1}{p-1} \\sum_{\\ell\\neq j} p_{\\vartheta^{(\\ell)}}(x_i)}
           - \\nabla_\\vartheta \\log \\pi(\\vartheta^{(j)})
@@ -278,9 +262,9 @@ def compile_drift_for_logscore(
     - :math:`\\vartheta_t^{(j)}` is the :math:`j`-th particle at time :math:`t`
     - :math:`p_{\\vartheta^{(j)}}(x_i)` is the model density of particle :math:`j`
       evaluated at data point :math:`x_i`
-    - :math:`\\log \\pi(\\vartheta^{(j)})` is the log prior density of the :math:`j`-th 
+    - :math:`\\log \\pi(\\vartheta^{(j)})` is the log prior density of the :math:`j`-th
       particle at time :math:`t`
-    - :math: `\\mathrm{d}B_t^{(j)}` is a realisation from a Brownian motion at
+    - :math:`\\mathrm{d}B_t^{(j)}` is a realisation from a Brownian motion at
       time :math:`t`
 
     **Implementation details**
@@ -330,7 +314,7 @@ def compile_drift_for_logscore(
 
     can be large when particle :math:`j` has high density under the target but low
     density under the mixture of other particles, causing exploding gradients.
-    We therefore clip in log-space before exponentiating for further numerical stability:
+    We therefore clip in log-space before exponentiating for numerical stability:
 
     .. math::
 
@@ -338,9 +322,11 @@ def compile_drift_for_logscore(
         = \\mathrm{clip}\\bigl(\\log w_j(x_i),\\,
           -c,\\, c\\bigr)
 
-    where :math:`c` = ``log_ratio_clip``. Clipping in log-space is preferable to
-    clipping the weights directly because it preserves the sign of the gradient
-    and avoids computing a very large number only to discard it.
+    where :math:`c` = ``log_ratio_clip``. The lower bound avoids negligible
+    weights from large negative log-ratios; the upper bound caps importance
+    weights when particle :math:`j` dominates the LOO mixture on :math:`y_i`,
+    which can otherwise explode ``ratio * score`` in the drift. Clipping in
+    log-space is preferable to clipping weights directly.
 
     Parameters
     ----------
@@ -358,9 +344,14 @@ def compile_drift_for_logscore(
     Returns
     -------
     wgf_grad
-        Shape ``(n_particles, n_params)``.
+        Interaction drift, shape ``(n_particles, n_params)``.
     prior_grad
-        Shape ``(n_particles, n_params)``.
+        Prior score gradient, shape ``(n_particles, n_params)``.
+
+    Shapes (``p`` = particles, ``d`` = raveled ``value_vars``, ``n_obs`` observations):
+
+    - Input ``particles``: ``(p, d)``
+    - Internal ``logp``: ``(p, n_obs)``; ``score``: ``(p, n_obs, d)``
     """
     model = modelcontext(model)
     if not model.observed_RVs:
@@ -374,8 +365,7 @@ def compile_drift_for_logscore(
     require_unconstrained_free_rvs(model)
 
     particles = pt.matrix("particles")
-
-    # prior contribution term: ∇_ϑ log π(ϑ^{(j)})
+    # Input (p, d): d = raveled size of model.value_vars (see PointMapper).
     try:
         # logp: p_{ϑ^{(j)}}(x_i); score: ∇_ϑ log p(y_i|ϑ^{(j)}); prior_grad: ∇_ϑ log π 
         # per particle: log p(y_i), score rows, log prior gradient
@@ -403,6 +393,7 @@ def compile_drift_for_logscore(
     
     # log importance weights vs mixture for chain rule, clipped for stability
     log_ratio_raw = logp - log_mix
+    # symmetric cap on log w_{i,j} before exp (stability)
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
     ratio = pt.exp(log_ratio)  # exponentiate for importance weights
     
@@ -417,11 +408,3 @@ def compile_drift_for_logscore(
         point_fn=False,
         on_unused_input="ignore",
     )
-
-
-def count_observations(logp_fn: PointFunc, mapper: PointMapper) -> int:
-    logp_vec = logp_fn(mapper.start_point)
-    logp_vec = np.asarray(logp_vec)
-    if logp_vec.ndim != 1:
-        logp_vec = logp_vec.reshape(-1)
-    return int(logp_vec.shape[0])

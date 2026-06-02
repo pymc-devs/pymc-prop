@@ -26,7 +26,7 @@ def _manual_wgf(particles, y, sigma, log_ratio_clip=50.0, eps=1e-300):
     ratio = np.exp(log_ratio)
 
     score = diff / (sigma**2)
-    return -np.mean(ratio[:, :, None] * score[:, :, None], axis=1)
+    return -np.sum(ratio[:, :, None] * score[:, :, None], axis=1)
 
 
 def test_logscore_wgf_matches_manual():

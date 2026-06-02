@@ -7,11 +7,7 @@ from typing import List
 
 import numpy as np
 
-from pymc_prop.compile import (
-    compile_batched_prior_grad,
-    compile_observed_logp,
-    count_observations,
-)
+from pymc_prop.compile import compile_batched_prior_grad
 from pymc_prop.particles import em_step, initialize_particles
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
@@ -40,7 +36,7 @@ def run_sampler(
     burn_in: int,
     thinning: int,
     step_size: float,
-    learning_rate: float | None,
+    learning_rate: float,
     random_seed: int | None,
 ) -> PrOResult:
     """Run the PrO particle EM loop.
@@ -62,11 +58,6 @@ def run_sampler(
     else:
         batched_prior_grad_fn = compile_batched_prior_grad(mapper, model)
 
-    if learning_rate is None:
-        logp_fn = compile_observed_logp(model)
-        n_obs = count_observations(logp_fn, mapper)
-        learning_rate = np.sqrt(float(n_obs))
-
     retained: List[np.ndarray] = []
 
     for step in range(n_steps):
@@ -79,7 +70,7 @@ def run_sampler(
             prior_grad = np.asarray(batched_prior_grad_fn(particles), dtype=float)
 
         particles = em_step(
-            particles, prior_grad, wgf_grad, step_size, float(learning_rate), rng
+            particles, prior_grad, wgf_grad, step_size, learning_rate, rng
         )
 
         if step >= burn_in and (step - burn_in) % thinning == 0:

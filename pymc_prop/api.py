@@ -19,13 +19,10 @@ def sample_pro(
     burn_in: int = 200,
     thinning: int = 1,
     step_size: float = 1e-3,
-    learning_rate: float | None = None,
+    learning_rate: float = 1.0,
     random_seed: int | None = None,
 ) -> PrOResult:
     """Run the PrO particle sampler on a PyMC model.
-
-    See :func:`~pymc_prop.compile.compile_drift_for_logscore` for the log-score
-    drift.
 
     Free RVs must be native unconstrained; reparameterize manually for now.
 
@@ -38,8 +35,16 @@ def sample_pro(
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
-        McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). If ``None``, uses
-        ``sqrt(n_obs)`` as the default value.
+        McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). Default ``1.0``.
+        The compiled interaction sums over observations; this factor scales that sum
+        in :func:`~pymc_prop.particles.em_step`.
+
+    See Also
+    --------
+    compile_drift_for_logscore
+        Log-score WGF drift (compiled interaction + prior grad).
+    LogScore
+        Scoring-rule wrapper used by default.
     """
     model = modelcontext(model)
 
