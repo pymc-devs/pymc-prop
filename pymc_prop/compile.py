@@ -263,6 +263,85 @@ def compile_drift_for_logscore(
 ) -> DriftFunc:
     """Compile log-score interaction and prior drift for one EM step.
 
+    .. math::
+
+        \\mathrm{d}\\vartheta_t^{(j)}
+        = -\\Bigl\\{
+          \\frac{\\lambda_n}{n} \\sum_i
+          \\frac{\\nabla_\\vartheta\\, p_{\\vartheta^{(j)}}(x_i)}
+          {\\frac{1}{p-1} \\sum_{\\ell\\neq j} p_{\\vartheta^{(\\ell)}}(x_i)}
+          - \\nabla_\\vartheta \\log \\pi(\\vartheta^{(j)})
+        \\Bigr\\}\\,\\mathrm{d}t + \\sqrt{2}\\,\\mathrm{d}B_t^{(j)}.
+
+    where:
+
+    - :math:`\\vartheta_t^{(j)}` is the :math:`j`-th particle at time :math:`t`
+    - :math:`p_{\\vartheta^{(j)}}(x_i)` is the model density of particle :math:`j`
+      evaluated at data point :math:`x_i`
+    - :math:`\\log \\pi(\\vartheta^{(j)})` is the log prior density of the :math:`j`-th 
+      particle at time :math:`t`
+    - :math: `\\mathrm{d}B_t^{(j)}` is a realisation from a Brownian motion at
+      time :math:`t`
+
+    **Implementation details**
+
+    The numerator :math:`\\nabla_\\vartheta p_{\\vartheta^{(j)}}(x_i)` is computed by 
+    the chain rule:
+
+    .. math::
+
+        \\nabla_\\vartheta p_{\\vartheta^{(j)}}(x_i)
+        = p_{\\vartheta^{(j)}}(x_i)
+          \\cdot \\nabla_\\vartheta \\log p_{\\vartheta^{(j)}}(x_i)
+
+    so the particle-dependent term in the above algorithm reduces to an importance weighted score:
+
+    .. math::
+
+        \\frac{\\nabla_\\vartheta p_{\\vartheta^{(j)}}(x_i)}{q_{-j}(x_i)}
+        = \\underbrace{\\frac{p_{\\vartheta^{(j)}}(x_i)}{q_{-j}(x_i)}}_{w_j(x_i)}
+          \\cdot \\nabla_\\vartheta \\log p_{\\vartheta^{(j)}}(x_i).
+
+    Computing :math:`q_{-j}(x_i) = \\frac{1}{p-1} \\sum_{\\ell \\neq j} p_{\\vartheta^{(\\ell)}}(x_i)` 
+    directly in probability space is numerically unstable so instead we work in log-space and use the 
+    log-sum-exp trick. Define the particle-wise maximum density as
+
+    .. math::
+
+        m(x_i) = \\max_j \\log p_{\\vartheta^{(j)}}(x_i)
+
+    then the leave-one-out log-mixture is
+
+    .. math::
+
+        \\log q_{-j}(x_i)
+        = m(x_i)
+          + \\log\\!\\Bigl(\\sum_{\\ell \\neq j}
+            e^{\\log p_{\\vartheta^{(\\ell)}}(x_i)\\,-\\,m(x_i)}\\Bigr)
+          - \\log(p - 1)
+
+    where the sum :math:`\\sum_{\\ell \\neq j}` is computed by forming the full sum
+    over all particles and subtracting particle :math:`j`'s own contribution. The raw 
+    log importance weight
+
+    .. math::
+
+        \\log w_j(x_i) = \\log p_{\\vartheta^{(j)}}(x_i) - \\log q_{-j}(x_i)
+
+    can be large when particle :math:`j` has high density under the target but low
+    density under the mixture of other particles, causing exploding gradients.
+    We therefore clip in log-space before exponentiating for further numerical stability:
+
+    .. math::
+
+        \\log \\tilde{w}_j(x_i)
+        = \\mathrm{clip}\\bigl(\\log w_j(x_i),\\,
+          -c,\\, c\\bigr)
+
+    where :math:`c` = ``log_ratio_clip``. Clipping in log-space is preferable to
+    clipping the weights directly because it preserves the sign of the gradient
+    and avoids computing a very large number only to discard it.
+
     Parameters
     ----------
     mapper
@@ -282,49 +361,6 @@ def compile_drift_for_logscore(
         Shape ``(n_particles, n_params)``.
     prior_grad
         Shape ``(n_particles, n_params)``.
-
-    .. math::
-
-        \\mathrm{d}\\vartheta_t^{(j)}
-        = -\\Bigl\\{
-          \\frac{\\lambda_n}{n} \\sum_i
-          \\frac{\\nabla_\\vartheta\\, p_{\\vartheta^{(j)}}(x_i)}
-          {\\frac{1}{p-1} \\sum_{\\ell\\neq j} p_{\\vartheta^{(\\ell)}}(x_i)}
-          - \\nabla_\\vartheta \\log \\pi(\\vartheta^{(j)})
-        \\Bigr\\}\\,\\mathrm{d}t + \\sqrt{2}\\,\\mathrm{d}B_t^{(j)}.
-
-    Density notation :math:`p_\\vartheta(x_i)` matches the paper's
-    :math:`\\mathrm{d}P_\\vartheta(x_i)`. Particle :math:`j` uses the
-    **leave-one-particle-out empirical measure**
-    :math:`Q_t^{(j)} = \\frac{1}{p-1}\\sum_{\\ell\\neq j}
-    \\delta_{\\vartheta_t^{(\\ell)}}`; the full cloud is the **empirical
-    particle measure**
-    :math:`\\widehat{Q}_t = \\frac{1}{p}\\sum_{j=1}^p
-    \\delta_{\\vartheta_t^{(j)}}`.
-
-    **Implementation details**
-
-    .. list-table::
-       :header-rows: 1
-       :widths: 45 55
-
-       * - Mathematical quantity
-         - Compiled graph / step
-       * - :math:`p_{\\vartheta^{(j)}}(x_i)`, :math:`\\log p(y_i \\mid \\vartheta^{(j)})`
-         - ``logp`` (batched observed logp)
-       * - :math:`\\nabla_\\vartheta \\log p(y_i \\mid \\vartheta^{(j)})`
-         - ``score`` (``jacobian`` on observed logp)
-       * - :math:`\\frac{1}{p-1}\\sum_{\\ell\\neq j} p_{\\vartheta^{(\\ell)}}(x_i)`
-         - ``sum_excl``, ``denom``, ``log_mix`` (leave-one-particle-out :math:`Q_t^{(j)}`)
-       * - :math:`w_{i,j} = p_{\\vartheta^{(j)}}(x_i) / p(y_i \\mid Q_t^{(j)})`
-         - ``log_ratio``, ``ratio`` (after ``log_ratio_clip``)
-       * - :math:`-\\frac{1}{n}\\sum_i w_{i,j}\\,\\nabla_\\vartheta \\log p(y_i \\mid \\vartheta^{(j)})`
-         - ``wgf_grad`` (multiply by :math:`\\lambda_n` in :func:`~pymc_prop.particles.em_step`)
-       * - :math:`\\nabla_\\vartheta \\log \\pi(\\vartheta^{(j)})`
-         - ``prior_grad``
-       * - :math:`\\lambda_n`, :math:`\\varepsilon`, :math:`\\sqrt{2}\\,\\mathrm{d}B_t^{(j)}`
-         - :func:`~pymc_prop.particles.em_step` (``learning_rate``, ``step_size``, noise)
-
     """
     model = modelcontext(model)
     if not model.observed_RVs:
@@ -333,9 +369,13 @@ def compile_drift_for_logscore(
         raise ValueError("Log-score requires continuous value variables.")
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
+
+    # ensure parameters are all unconstrained
     require_unconstrained_free_rvs(model)
 
     particles = pt.matrix("particles")
+
+    # prior contribution term: ∇_ϑ log π(ϑ^{(j)})
     try:
         # logp: p_{ϑ^{(j)}}(x_i); score: ∇_ϑ log p(y_i|ϑ^{(j)}); prior_grad: ∇_ϑ log π 
         # per particle: log p(y_i), score rows, log prior gradient
@@ -349,24 +389,28 @@ def compile_drift_for_logscore(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True
         )
 
-    # log p(y_i | Q_t^{(j)}): leave-one-particle-out empirical measure Q_t^{(j)}
+    # subtract particle-wise max before exponentiating to prevent overflow/underflow
     logp_max = pt.max(logp, axis=0, keepdims=True)
     exp_shifted = pt.exp(logp - logp_max)
-    sum_all = pt.sum(exp_shifted, axis=0, keepdims=True)
-    sum_excl = pt.maximum(sum_all - exp_shifted, eps)  # (1/(p-1)) Σ_{ℓ≠j} p_{ϑ^{(ℓ)}}
 
+    # leave-one-particle-out density: Σ_{ℓ≠j} p_{ϑ^{(ℓ)}}
+    sum_all = pt.sum(exp_shifted, axis=0, keepdims=True)
+    sum_excl = pt.maximum(sum_all - exp_shifted, eps)
+
+    # restore the log p_max shift and divide by (p-1)
     denom = pt.cast(particles.shape[0] - 1, logp.dtype)
-    log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)
-    # log importance weights vs mixture
-    # log w_{i,j} = log p(y_i|ϑ^{(j)}) − log p(y_i|Q_t^{(j)})
+    log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)  # (1/(p-1)) Σ_{ℓ≠j} p_{ϑ^{(ℓ)}}
+    
+    # log importance weights vs mixture for chain rule, clipped for stability
     log_ratio_raw = logp - log_mix
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
-    ratio = pt.exp(log_ratio)
-    # wgf_grad: interaction drift
-    # −(1/n) Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)})  (λ_n applied in em_step)
-    wgf_grad = -pt.mean(ratio[:, :, None] * score, axis=1)
-    # prior_grad: prior term
-    # ∇_ϑ log π(ϑ^{(j)}) — prior term in em_step
+    ratio = pt.exp(log_ratio)  # exponentiate for importance weights
+    
+    # particle interaction term computed by chain rule
+    # − Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)})  (λ_n applied in em_step)
+    wgf_grad = -pt.sum(ratio[:, :, None] * score, axis=1)
+    
+    # return compiled functions
     return model.compile_fn(
         inputs=[particles],
         outs=[wgf_grad, prior_grad],
