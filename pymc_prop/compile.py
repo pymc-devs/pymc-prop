@@ -261,31 +261,70 @@ def compile_drift_for_logscore(
     eps: float = 1e-300,
     jacobian: bool = True,
 ) -> DriftFunc:
-    """Compile fused batched log-score drift for one EM step.
+    """Compile log-score interaction and prior drift for one EM step.
 
-    For particle :math:`j`, evaluates the log-score Wasserstein term
-    :math:`\\mathcal{W}(Q^{(j)})` (McLatchie et al., 2025, appendix
-    “Examples: MMD and logarithmic score”) using the finite-:math:`p`
-    leave-one-out mixture
-
-    .. math::
-
-        Q_t^{(j)} \\approx \\frac{1}{p-1}\\sum_{\\ell\\neq j}
-        \\delta_{\\vartheta^{(\\ell)}},
-
-    with mixture log-density computed via log-sum-exp over the batch.
-    Per-observation log-likelihood ratios are clipped before exponentiating;
-    the interaction drift is ``wgf_grad = -mean(ratio * score, axis=obs)``.
-
-    Also compiles batched prior score gradients
-    :math:`\\nabla_{\\vartheta}\\log\\pi(\\vartheta)` for the same particles.
-
+    Parameters
+    ----------
+    mapper
+        Point mapper for the model.
+    model
+        PyMC model.
+    log_ratio_clip
+        Clip log likelihood ratios before exponentiating (stability only).
+    eps
+        Floor for leave-one-particle-out normalising sums in the compiled graph.
+    jacobian
+        Whether to use the Jacobian of the log prior.
+    
     Returns
     -------
     wgf_grad
         Shape ``(n_particles, n_params)``.
     prior_grad
         Shape ``(n_particles, n_params)``.
+
+    .. math::
+
+        \\mathrm{d}\\vartheta_t^{(j)}
+        = -\\Bigl\\{
+          \\frac{\\lambda_n}{n} \\sum_i
+          \\frac{\\nabla_\\vartheta\\, p_{\\vartheta^{(j)}}(x_i)}
+          {\\frac{1}{p-1} \\sum_{\\ell\\neq j} p_{\\vartheta^{(\\ell)}}(x_i)}
+          - \\nabla_\\vartheta \\log \\pi(\\vartheta^{(j)})
+        \\Bigr\\}\\,\\mathrm{d}t + \\sqrt{2}\\,\\mathrm{d}B_t^{(j)}.
+
+    Density notation :math:`p_\\vartheta(x_i)` matches the paper's
+    :math:`\\mathrm{d}P_\\vartheta(x_i)`. Particle :math:`j` uses the
+    **leave-one-particle-out empirical measure**
+    :math:`Q_t^{(j)} = \\frac{1}{p-1}\\sum_{\\ell\\neq j}
+    \\delta_{\\vartheta_t^{(\\ell)}}`; the full cloud is the **empirical
+    particle measure**
+    :math:`\\widehat{Q}_t = \\frac{1}{p}\\sum_{j=1}^p
+    \\delta_{\\vartheta_t^{(j)}}`.
+
+    **Implementation details**
+
+    .. list-table::
+       :header-rows: 1
+       :widths: 45 55
+
+       * - Mathematical quantity
+         - Compiled graph / step
+       * - :math:`p_{\\vartheta^{(j)}}(x_i)`, :math:`\\log p(y_i \\mid \\vartheta^{(j)})`
+         - ``logp`` (batched observed logp)
+       * - :math:`\\nabla_\\vartheta \\log p(y_i \\mid \\vartheta^{(j)})`
+         - ``score`` (``jacobian`` on observed logp)
+       * - :math:`\\frac{1}{p-1}\\sum_{\\ell\\neq j} p_{\\vartheta^{(\\ell)}}(x_i)`
+         - ``sum_excl``, ``denom``, ``log_mix`` (leave-one-particle-out :math:`Q_t^{(j)}`)
+       * - :math:`w_{i,j} = p_{\\vartheta^{(j)}}(x_i) / p(y_i \\mid Q_t^{(j)})`
+         - ``log_ratio``, ``ratio`` (after ``log_ratio_clip``)
+       * - :math:`-\\frac{1}{n}\\sum_i w_{i,j}\\,\\nabla_\\vartheta \\log p(y_i \\mid \\vartheta^{(j)})`
+         - ``wgf_grad`` (multiply by :math:`\\lambda_n` in :func:`~pymc_prop.particles.em_step`)
+       * - :math:`\\nabla_\\vartheta \\log \\pi(\\vartheta^{(j)})`
+         - ``prior_grad``
+       * - :math:`\\lambda_n`, :math:`\\varepsilon`, :math:`\\sqrt{2}\\,\\mathrm{d}B_t^{(j)}`
+         - :func:`~pymc_prop.particles.em_step` (``learning_rate``, ``step_size``, noise)
+
     """
     model = modelcontext(model)
     if not model.observed_RVs:
@@ -298,6 +337,7 @@ def compile_drift_for_logscore(
 
     particles = pt.matrix("particles")
     try:
+        # logp: p_{ϑ^{(j)}}(x_i); score: ∇_ϑ log p(y_i|ϑ^{(j)}); prior_grad: ∇_ϑ log π 
         # per particle: log p(y_i), score rows, log prior gradient
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=False)
         prior_grad = _batched_prior_grad_graph(
@@ -309,22 +349,24 @@ def compile_drift_for_logscore(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True
         )
 
-    # LOO mixture log-density Q_t^{(j)}
+    # log p(y_i | Q_t^{(j)}): leave-one-particle-out empirical measure Q_t^{(j)}
     logp_max = pt.max(logp, axis=0, keepdims=True)
     exp_shifted = pt.exp(logp - logp_max)
     sum_all = pt.sum(exp_shifted, axis=0, keepdims=True)
-    sum_excl = pt.maximum(sum_all - exp_shifted, eps)
+    sum_excl = pt.maximum(sum_all - exp_shifted, eps)  # (1/(p-1)) Σ_{ℓ≠j} p_{ϑ^{(ℓ)}}
 
     denom = pt.cast(particles.shape[0] - 1, logp.dtype)
     log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)
     # log importance weights vs mixture
+    # log w_{i,j} = log p(y_i|ϑ^{(j)}) − log p(y_i|Q_t^{(j)})
     log_ratio_raw = logp - log_mix
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
     ratio = pt.exp(log_ratio)
-    # interaction drift (Wasserstein / log-score term W)
+    # wgf_grad: interaction drift
+    # −(1/n) Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)})  (λ_n applied in em_step)
     wgf_grad = -pt.mean(ratio[:, :, None] * score, axis=1)
-    # prior_grad already holds log prior gradient (prior term in em_step)
-
+    # prior_grad: prior term
+    # ∇_ϑ log π(ϑ^{(j)}) — prior term in em_step
     return model.compile_fn(
         inputs=[particles],
         outs=[wgf_grad, prior_grad],

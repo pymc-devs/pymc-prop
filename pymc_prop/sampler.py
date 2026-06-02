@@ -22,9 +22,10 @@ class PrOResult:
     """Interim sampler output; ArviZ ``InferenceData`` planned (D5).
 
     ``particles`` has shape ``(n_samples, n_particles, n_params)``. Each
-    snapshot is the empirical measure :math:`\\widehat{Q}[t_i]`,
-    kept at deterministic EM steps after ``burn_in``
-    (every ``thinning``-th iterate).
+    retained slice is an **empirical particle measure**
+    :math:`\\widehat{Q}[t_i] = \\frac{1}{p}\\sum_{j=1}^p
+    \\delta_{\\vartheta_{t_i}^{(j)}}`, kept after ``burn_in`` every
+    ``thinning`` EM steps.
     """
 
     particles: np.ndarray
@@ -44,8 +45,7 @@ def run_sampler(
 ) -> PrOResult:
     """Run the PrO particle EM loop.
 
-    After ``burn_in`` steps, retains the full particle cloud every ``thinning``
-    EM iterates (deterministic stride along the discretised flow).
+    Each step: compile drift, then :func:`~pymc_prop.particles.em_step`.
     """
     rng = np.random.default_rng(random_seed)
 
@@ -70,6 +70,7 @@ def run_sampler(
     retained: List[np.ndarray] = []
 
     for step in range(n_steps):
+        # compile_drift_for_logscore -> em_step
         if drift_fn is not None:
             wgf_grad, prior_grad = drift_fn(particles)
         else:

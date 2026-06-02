@@ -26,13 +26,26 @@ class ScoringRule:
 
 @dataclass
 class LogScore(ScoringRule):
-    """Log-score scoring rule (LOO mixture WGF)."""
+    """Log-score scoring rule for PrO particle sampling.
+
+    Uses :func:`~pymc_prop.compile.compile_drift_for_logscore`. Requires
+    continuous ``model.value_vars`` and at least two particles.
+
+    :meth:`compile_drift` returns ``(wgf_grad, prior_grad)`` per EM step.
+    :meth:`compile_wgf` returns the interaction term only.
+
+    Parameters
+    ----------
+    log_ratio_clip
+        Clip log likelihood ratios before exponentiating (stability only).
+    eps
+        Floor for leave-one-particle-out normalising sums in the compiled graph.
+    """
 
     log_ratio_clip: float = 10.0
     eps: float = 1e-300
 
     def compile_drift(self, model, mapper: PointMapper) -> Callable[[np.ndarray], DriftReturn]:
-        # interaction drift + log prior gradient per particle (see compile.py)
         return compile_drift_for_logscore(
             mapper,
             model,
@@ -44,7 +57,6 @@ class LogScore(ScoringRule):
         drift_fn = self.compile_drift(model, mapper)
 
         def wgf(particles: np.ndarray) -> np.ndarray:
-            # interaction drift only (drops prior term)
             if particles.shape[0] < 2:
                 raise ValueError("Log-score WGF requires at least two particles.")
             wgf_grad, _prior_grad = drift_fn(particles)

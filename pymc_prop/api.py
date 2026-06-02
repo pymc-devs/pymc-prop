@@ -23,17 +23,18 @@ def sample_pro(
     random_seed: int | None = None,
 ) -> PrOResult:
     """Run the PrO particle sampler on a PyMC model.
-    
-    Free RVs must be native unconstrained; reparameterize manually
-    for now.
+
+    See :func:`~pymc_prop.compile.compile_drift_for_logscore` for the log-score
+    drift.
+
+    Free RVs must be native unconstrained; reparameterize manually for now.
 
     Parameters
     ----------
     burn_in
         EM steps to discard before retaining snapshots.
     thinning
-        After ``burn_in``, keep every ``thinning``-th EM iterate (deterministic
-        stride along the discretised flow).
+        After ``burn_in``, keep every ``thinning``-th EM step.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in

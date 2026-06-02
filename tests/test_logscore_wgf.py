@@ -6,7 +6,7 @@ from pymc_prop.scoring import LogScore
 
 
 def _manual_wgf(particles, y, sigma, log_ratio_clip=50.0, eps=1e-300):
-    # numpy reference: LOO mixture log weights × per-obs score → interaction drift W
+    # numpy reference: leave-one-particle-out measure -> interaction drift
     p, d = particles.shape
     y = np.asarray(y).reshape(-1)
     n = y.shape[0]
@@ -30,7 +30,7 @@ def _manual_wgf(particles, y, sigma, log_ratio_clip=50.0, eps=1e-300):
 
 
 def test_logscore_wgf_matches_manual():
-    # compiled log-score WGF (LOO mixture) vs closed-form Gaussian location reference
+    # compiled log-score WGF vs closed-form Gaussian location reference
     rng = np.random.default_rng(10)
     y = rng.normal(0.0, 1.0, size=8)
     sigma = 1.0
