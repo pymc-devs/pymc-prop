@@ -2,19 +2,19 @@
 
 **Predictively Oriented (PrO) posteriors for [PyMC](https://www.pymc.io/).**
 
-Experimental package implementing particle-based PrO inference in PyMC models. The current implementation focuses on the **log-score** scoring rule and its **Wasserstein gradient flow (WGF)** sampler.
+Experimental package for fitting predictively oriented posteriors in PyMC. The current implementation focuses on the **log-score** scoring rule and its **Wasserstein gradient flow (WGF)** sampler.
 
-## What is PrO?
+## Predictively oriented posteriors
 
-Predictively Oriented posteriors optimize over **mixing distributions** \(Q\) on parameters—the distributions you actually use to form predictions—not over a single point estimate obtained by integrating under a Gibbs posterior and then predicting. Under **misspecification**, Bayes and Gibbs inference often collapse to one mode that minimizes KL to the data-generating process, even when no single parameter value predicts well everywhere. PrO instead asks which \(Q\) minimizes expected scoring-rule loss; when the model family cannot match the data with one point, the optimal \(Q\) may spread mass across several modes—the **mixability gap** between point predictives and mixtures over them. This package approximates that \(Q\) with a **particle ensemble** in unconstrained PyMC `value_vars` space, updated by a log-score **Wasserstein gradient flow** via `sample_pro`.
+Predictively oriented (PrO) posteriors combine the most desirable aspects of both parameter inference and density estimation. They expresses parameter uncertainty as a consequence of predictive ability, and learn the predictively-optimal mixing distribution over model parameters. Doing so leads to inferences which predictively dominate both classical and generalised Bayes posterior predictive distributions: up to logarithmic factors, PrO posteriors converge to the predictively optimal model average. This means that they concentrate around the true model in the same way as Bayes and Gibbs posteriors if the model can recover the data-generating distribution, but do not concentrate in the presence of non-trivial forms of model misspecification. Instead, they stabilise towards a predictively-optimal posterior whose degree of irreducible uncertainty admits an interpretation as the degree of model misspecification. This package performs computation via a particle-discretised Wasserstein gradient flow via the primary exposed method `sample_pro`.
 
 ## Overview
 
-This library compiles PyMC log-probability graphs and runs those particles with three main pieces:
+This library compiles PyMC log-probability graphs fit for PrO posterior with three main components:
 
 - **Prior score** — gradient of the prior log-density (free RVs only).
 - **Observed score** — per-observation contributions from the likelihood (elementwise logp).
-- **Sampler** — EM-style updates with log-score WGF particle dynamics (`sample_pro`).
+- **Sampler** — particle-discretised Wasserstein gradient flow (`sample_pro`).
 
 Status: early research code; API and numerics may change.
 
@@ -50,11 +50,9 @@ with pm.Model() as model:
 
 `result` is a `PrOResult` with particle traces. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, `step_size`, and `learning_rate` for your model.
 
-For the full misspecification demo (the running example from the PrO literature), see the [tutorial notebook](examples/bimodal_gaussian.ipynb) below.
+## Tutorials
 
-## Tutorial
-
-The main walkthrough is [examples/bimodal_gaussian.ipynb](examples/bimodal_gaussian.ipynb): simulate a bimodal Gaussian mixture, fit a deliberately misspecified unimodal location model, run `sample_pro`, and inspect particle trajectories plus posterior predictive mass on both data modes.
+The main walkthrough is [examples/bimodal_gaussian.ipynb](examples/bimodal_gaussian.ipynb): simulate a bimodal Gaussian mixture, fit a deliberately misspecified unimodal location model with `sample_pro`, and inspect the PrO posterior predictive. We find that, since the true data-generating process can be recovered by a mixture over the model class, the PrO posterior recovers it exactly.
 
 ## Implementation
 
@@ -75,7 +73,7 @@ Import from `pymc_prop`:
 **Conventions**
 
 - Particles live in PyMC’s unconstrained `value_vars` coordinates (via `PointMapper` / `DictToArrayBijection`).
-- Free RVs must be native unconstrained; reparameterize manually for now.
+- For now, free RVs **must** be native unconstrained.
 - Observed log-probability is **elementwise** — one term per observation, not a single summed likelihood.
 - Log-score sampling requires **continuous** value variables.
 
