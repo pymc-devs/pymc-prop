@@ -5,7 +5,7 @@ from pymc_prop.sample import sample_pro
 
 
 def test_sample_pro_runs_gaussian():
-    # smoke: full EM loop returns finite retained particles (burn_in + thinning)
+    # smoke: full simulation loop returns finite retained particles (burn_in + thinning)
     rng = np.random.default_rng(42)
     y = rng.normal(0.0, 1.0, size=20)
 

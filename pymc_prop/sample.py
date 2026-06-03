@@ -29,15 +29,15 @@ def sample_pro(
     Parameters
     ----------
     burn_in
-        EM steps to discard before retaining snapshots.
+        Time steps to discard before retaining snapshots.
     thinning
-        After ``burn_in``, keep every ``thinning``-th EM step.
+        After ``burn_in``, keep every ``thinning``-th time step.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
         McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). Default ``1.0``.
         The compiled interaction sums over observations; this factor scales that sum
-        in :func:`~pymc_prop.particles.em_step`.
+        in :func:`~pymc_prop.particles.time_step`.
 
     See Also
     --------

@@ -31,7 +31,7 @@ class LogScore(ScoringRule):
     Uses :func:`~pymc_prop.compile.compile_drift_for_logscore`. Requires
     continuous ``model.value_vars`` and at least two particles.
 
-    :meth:`compile_drift` returns ``(wgf_grad, prior_grad)`` per EM step.
+    :meth:`compile_drift` returns ``(wgf_grad, prior_grad)`` per time step.
     :meth:`compile_wgf` returns the interaction term only.
 
     Parameters

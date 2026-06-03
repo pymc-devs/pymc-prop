@@ -169,7 +169,10 @@ def _batched_prior_grad_graph(
 
 
 def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None = None) -> BatchedLogpScoreFunc:
-    """Compile batched elementwise observed logp and score."""
+    """Compile batched elementwise observed logp and score.
+
+    Uses vectorized batching when possible; otherwise ``scan`` at compile time.
+    """
     model = modelcontext(model)
     if mapper is None:
         raise ValueError("`mapper` is required for batched compilation.")
@@ -179,9 +182,9 @@ def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None =
         raise ValueError("Predictive score requires continuous model parameters.")
 
     particles = pt.matrix("particles")
-    # Prefer pt.vectorize over the particle batch; if graph construction fails
-    # (PyTensor cannot vectorize this model's logp/score subgraph), fall back
-    # to scan over rows. This runs at compile time, not each EM step.
+    # Compile-time only: batch particle rows with pt.vectorize. If graph construction
+    # fails (often flat_to_value_vars reshapes in the logp/score subgraph), rebuild
+    # with scan over rows (slower, identical output shapes).
     try:
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=False)
         return model.compile_fn(
@@ -190,7 +193,7 @@ def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None =
             point_fn=False,
             on_unused_input="ignore",
         )
-    except Exception:
+    except Exception:  # vectorize path failed at graph build; use scan
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=True)
         return model.compile_fn(
             inputs=[particles],
@@ -206,7 +209,10 @@ def compile_batched_prior_grad(
     *,
     jacobian: bool = True,
 ) -> BatchedGradFunc:
-    """Compile batched prior score gradients."""
+    """Compile batched prior score gradients.
+
+    Uses vectorized batching when possible; otherwise ``scan`` at compile time.
+    """
     model = modelcontext(model)
     if model.discrete_value_vars:
         raise ValueError("Prior gradient requires continuous value variables.")
@@ -214,7 +220,9 @@ def compile_batched_prior_grad(
         raise ValueError("Model has no free random variables.")
 
     particles = pt.matrix("particles")
-    # Prefer pt.vectorize; fall back to scan at compile time if vectorization fails.
+    # Compile-time only: batch particle rows with pt.vectorize. If graph construction
+    # fails (often flat_to_value_vars reshapes in the logp/score subgraph), rebuild
+    # with scan over rows (slower, identical output shapes).
     try:
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=False
@@ -225,7 +233,7 @@ def compile_batched_prior_grad(
             point_fn=False,
             on_unused_input="ignore",
         )
-    except Exception:
+    except Exception:  # vectorize path failed at graph build; use scan
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True
         )
@@ -245,7 +253,7 @@ def compile_drift_for_logscore(
     eps: float = 1e-300,
     jacobian: bool = True,
 ) -> DriftFunc:
-    """Compile log-score interaction and prior drift for one EM step.
+    """Compile log-score interaction and prior drift for one time step.
 
     .. math::
 
@@ -361,11 +369,13 @@ def compile_drift_for_logscore(
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
 
-    # ensure parameters are all unconstrained
+    # Model guard: reject implicit transforms on free RVs.
     require_unconstrained_free_rvs(model)
 
-    particles = pt.matrix("particles")
-    # Input (p, d): d = raveled size of model.value_vars (see PointMapper).
+    particles = pt.matrix("particles")  # compile input (p, d): one row per particle in flat value_vars space
+    # Compile-time only: batch particle rows with pt.vectorize. If graph construction
+    # fails (often flat_to_value_vars reshapes in the logp/score subgraph), rebuild
+    # with scan over rows (slower, identical output shapes).
     try:
         # logp: p_{ϑ^{(j)}}(x_i); score: ∇_ϑ log p(y_i|ϑ^{(j)}); prior_grad: ∇_ϑ log π 
         # per particle: log p(y_i), score rows, log prior gradient
@@ -373,7 +383,7 @@ def compile_drift_for_logscore(
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=False
         )
-    except Exception:
+    except Exception:  # vectorize path failed at graph build; use scan
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=True)
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True
@@ -398,7 +408,7 @@ def compile_drift_for_logscore(
     ratio = pt.exp(log_ratio)  # exponentiate for importance weights
     
     # particle interaction term computed by chain rule
-    # − Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)})  (λ_n applied in em_step)
+    # − Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)})  (λ_n applied in time_step)
     wgf_grad = -pt.sum(ratio[:, :, None] * score, axis=1)
     
     # return compiled functions

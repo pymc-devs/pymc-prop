@@ -26,7 +26,7 @@ def initialize_particles(
     return base[None, :] + noise
 
 
-def em_step(
+def time_step(
     particles: np.ndarray,
     prior_grad: np.ndarray,
     wgf_grad: np.ndarray,
@@ -34,7 +34,7 @@ def em_step(
     learning_rate: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Euler-Maruyama step for log-score PrO particles.
+    """Advance particles one discrete-time step along the log-score WGF.
 
     ``learning_rate`` is :math:`\\lambda_n`, ``step_size`` is :math:`\\varepsilon`;
     drift comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`.

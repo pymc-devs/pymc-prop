@@ -67,6 +67,8 @@ def flat_to_value_vars(
 def require_unconstrained_free_rvs(model=None) -> None:
     """Require free RVs without PyMC's default constrained-space transforms.
 
+    Compile-time check only; raises ``ValueError``.
+
     TODO: ``model`` has free RVs with implicit transforms are
     rejected until the change-of-variables story for PrO WGF on transformed
     parameters is documented.

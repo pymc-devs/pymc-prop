@@ -75,7 +75,7 @@ Import from `pymc_prop`:
 - Particles live in PyMC’s unconstrained `value_vars` coordinates (via `PointMapper` / `DictToArrayBijection`).
 - For now, free RVs **must** be native unconstrained.
 - Observed log-probability is **elementwise** — one term per observation, not a single summed likelihood.
-- Log-score WGF interaction is summed over observations in compile; `learning_rate` (default `1.0`, paper's :math:`\lambda_n`) scales it in `em_step`.
+- Log-score WGF interaction is summed over observations in compile; `learning_rate` (default `1.0`, paper's :math:`\lambda_n`) scales it in `time_step`.
 - Log-score sampling requires **continuous** value variables.
 
 Only `scoring_rule="log"` is supported in this version.
