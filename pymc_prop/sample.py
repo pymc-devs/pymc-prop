@@ -56,6 +56,8 @@ def sample_pro(
         raise ValueError("burn_in must be non-negative.")
     if thinning <= 0:
         raise ValueError("thinning must be positive.")
+    if step_size <= 0:
+        raise ValueError("step_size must be positive.")
 
     if isinstance(scoring_rule, str):
         if scoring_rule != "log":

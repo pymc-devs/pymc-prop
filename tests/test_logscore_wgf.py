@@ -7,9 +7,8 @@ from pymc_prop.scoring import LogScore
 
 def _manual_wgf(particles, y, sigma, log_ratio_clip=50.0, eps=1e-300):
     # numpy reference: leave-one-particle-out measure -> interaction drift
-    p, d = particles.shape
+    p = particles.shape[0]
     y = np.asarray(y).reshape(-1)
-    n = y.shape[0]
 
     diff = y[None, :] - particles
     log_norm = -0.5 * np.log(2.0 * np.pi * sigma**2)
