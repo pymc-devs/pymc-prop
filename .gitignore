@@ -1,0 +1,37 @@
+# Python bytecode and cache directories
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+
+# Test and coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Local virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Notebook state
+.ipynb_checkpoints/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+.cursor/
+AGENTS.md
+docs/
+private/
