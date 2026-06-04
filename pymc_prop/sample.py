@@ -29,7 +29,8 @@ def sample_pro(
     Parameters
     ----------
     burn_in
-        Time steps to discard before retaining snapshots.
+        Time steps to discard before retaining snapshots. Not ``pm.sample``
+        ``tune``: discard-only along a fixed ``n_steps`` horizon.
     thinning
         After ``burn_in``, keep every ``thinning``-th time step.
     learning_rate
