@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Literal
 
 import numpy as np
 
 from pymc_prop.compile import compile_batched_prior_grad
-from pymc_prop.particles import initialize_particles, time_step
+from pymc_prop.particles import (
+    initialize_particles,
+    initialize_particles_from_prior,
+    time_step,
+)
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
 
@@ -38,6 +42,8 @@ def run_sampler(
     step_size: float,
     learning_rate: float,
     random_seed: int | None,
+    init: Literal["jitter", "prior"] = "prior",
+    jitter: float = 0.1,
 ) -> PrOResult:
     """Run the PrO particle simulation loop.
 
@@ -45,9 +51,14 @@ def run_sampler(
     """
     rng = np.random.default_rng(random_seed)
 
-    # Sec. 5: particles in unconstrained value_vars space (mapper + jittered init)
-    start = mapper.ravel(mapper.start_point)
-    particles = initialize_particles(start, n_particles, rng)
+    # Sec. 5: particles in unconstrained value_vars space
+    if init == "prior":
+        particles = initialize_particles_from_prior(model, mapper, n_particles, rng)
+    elif init == "jitter":
+        start = mapper.ravel(mapper.start_point)
+        particles = initialize_particles(start, n_particles, rng, jitter=jitter)
+    else:
+        raise ValueError(f"Unknown init method: {init!r}.")
 
     wgf_fn = scoring_rule.compile_wgf(model, mapper)
     batched_prior_grad_fn = None

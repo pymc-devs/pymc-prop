@@ -29,6 +29,8 @@ examples = [
   "jupyter",
   "ipykernel",
   "seaborn",
+  "palmerpenguins",
+  "scikit-learn",
 ]
 
 [tool.pytest.ini_options]
