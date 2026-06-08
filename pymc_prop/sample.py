@@ -39,6 +39,9 @@ def sample_pro(
         McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). Default ``1.0``.
         The compiled interaction sums over observations; this factor scales that sum
         in :func:`~pymc_prop.particles.time_step`.
+    random_seed
+        Seeds particle initialization (one independent prior draw per particle,
+        with finite-logp retry) and the Euler-Maruyama noise.
 
     See Also
     --------
@@ -59,7 +62,6 @@ def sample_pro(
         raise ValueError("thinning must be positive.")
     if step_size <= 0:
         raise ValueError("step_size must be positive.")
-
     if isinstance(scoring_rule, str):
         if scoring_rule != "log":
             raise ValueError("Only log-score is supported in this version.")

@@ -45,9 +45,8 @@ def run_sampler(
     """
     rng = np.random.default_rng(random_seed)
 
-    # Sec. 5: particles in unconstrained value_vars space (mapper + jittered init)
-    start = mapper.ravel(mapper.start_point)
-    particles = initialize_particles(start, n_particles, rng)
+    # Sec. 5: particles in unconstrained value_vars space
+    particles = initialize_particles(model, mapper, n_particles, rng)
 
     wgf_fn = scoring_rule.compile_wgf(model, mapper)
     batched_prior_grad_fn = None
