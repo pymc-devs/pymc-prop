@@ -36,8 +36,8 @@ def sample_pro(
     thinning
         After ``burn_in``, keep every ``thinning``-th time step.
     init
-        ``"jitter"``: Gaussian noise around ``model.initial_point()``;
-        ``"prior"``: independent prior draws per particle (SMC-style).
+        ``"jitter"``: each particle is initialized from ``model.initial_point()`` plus Gaussian noise;
+        ``"prior"``: each particle is initialized from the prior.
     jitter
         Scale for isotropic Gaussian noise when ``init="jitter"``.
     learning_rate
