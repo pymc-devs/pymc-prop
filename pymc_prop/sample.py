@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pymc.model import modelcontext
+from xarray import DataTree
 
+from pymc_prop.arviz import pro_to_datatree
 from pymc_prop.points import make_point_mapper
-from pymc_prop.sampler import PrOResult, run_sampler
+from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore, ScoringRule
 
 
@@ -21,18 +23,29 @@ def sample_pro(
     step_size: float = 1e-3,
     learning_rate: float = 1.0,
     random_seed: int | None = None,
-) -> PrOResult:
+    coords: dict[str, Any] | None = None,
+    dims: dict[str, list[str]] | None = None,
+    include_log_likelihood: bool = True,
+    include_observed_data: bool = True,
+    include_sample_stats: bool = True,
+    datatree_kwargs: dict[str, Any] | None = None,
+) -> DataTree:
     """Run the PrO particle sampler on a PyMC model.
 
     Free RVs must be native unconstrained; reparameterize manually for now.
 
+    Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
+    ``observed_data``, ``log_likelihood``, and ``sample_stats`` groups.
+    Retained time steps map to the ``chain`` dimension; particles at
+    each time step map to ``draw``.
+
     Parameters
     ----------
     burn_in
-        Time steps to discard before retaining snapshots. Not ``pm.sample``
+        Time steps to discard before retaining steps. Not ``pm.sample``
         ``tune``: discard-only along a fixed ``n_steps`` horizon.
     thinning
-        After ``burn_in``, keep every ``thinning``-th time step.
+        After ``burn_in``, keep every ``thinning``-th retained step.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
@@ -42,6 +55,17 @@ def sample_pro(
     random_seed
         Seeds particle initialization (one independent prior draw per particle,
         with finite-logp retry) and the Euler-Maruyama noise.
+    coords, dims
+        Optional coordinate and dimension names merged with the PyMC model
+        definitions before building the DataTree.
+    include_log_likelihood, include_observed_data, include_sample_stats
+        Control which optional DataTree groups are populated. Set
+        ``include_log_likelihood=False`` to skip the post-sampling logp pass
+        when only particle trajectories are needed.
+    datatree_kwargs
+        Extra keyword arguments forwarded to :func:`~pymc_prop.arviz.pro_to_datatree`
+        (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
+        use the top-level parameters above; ``sample_dims`` cannot be overridden.
 
     See Also
     --------
@@ -49,6 +73,8 @@ def sample_pro(
         Log-score WGF drift (compiled interaction + prior grad).
     LogScore
         Scoring-rule wrapper used by default.
+    pro_to_datatree
+        Convert retained particles to an ArviZ DataTree.
     """
     model = modelcontext(model)
 
@@ -69,7 +95,7 @@ def sample_pro(
 
     mapper = make_point_mapper(model)
 
-    return run_sampler(
+    particles = run_sampler(
         model=model,
         mapper=mapper,
         scoring_rule=scoring_rule,
@@ -80,4 +106,20 @@ def sample_pro(
         step_size=step_size,
         learning_rate=learning_rate,
         random_seed=random_seed,
+    )
+
+    return pro_to_datatree(
+        particles,
+        model=model,
+        mapper=mapper,
+        burn_in=burn_in,
+        thinning=thinning,
+        n_steps=n_steps,
+        learning_rate=learning_rate,
+        coords=coords,
+        dims=dims,
+        include_log_likelihood=include_log_likelihood,
+        include_observed_data=include_observed_data,
+        include_sample_stats=include_sample_stats,
+        datatree_kwargs=datatree_kwargs,
     )

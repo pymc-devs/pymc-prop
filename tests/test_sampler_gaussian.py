@@ -17,7 +17,7 @@ def test_sample_pro_runs_gaussian():
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=y)
 
-    result = sample_pro(
+    dt = sample_pro(
         model=model,
         n_particles=8,
         n_steps=60,
@@ -27,9 +27,9 @@ def test_sample_pro_runs_gaussian():
         random_seed=123,
     )
 
-    assert result.particles.ndim == 3
-    assert result.particles.shape[1] == 8
-    assert np.all(np.isfinite(result.particles))
+    assert "mu" in dt.posterior
+    assert dt.posterior.sizes["draw"] == 8
+    assert np.all(np.isfinite(dt.posterior["mu"].values))
 
 
 def test_prior_init_particles_are_non_degenerate():

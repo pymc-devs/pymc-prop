@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import List
 
 import numpy as np
@@ -11,20 +10,6 @@ from pymc_prop.compile import compile_batched_prior_grad
 from pymc_prop.particles import initialize_particles, time_step
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
-
-
-@dataclass
-class PrOResult:
-    """Interim sampler output; ArviZ ``InferenceData`` planned (D5).
-
-    ``particles`` has shape ``(n_samples, n_particles, n_params)``. Each
-    retained slice is an **empirical particle measure**
-    :math:`\\widehat{Q}[t_i] = \\frac{1}{p}\\sum_{j=1}^p
-    \\delta_{\\vartheta_{t_i}^{(j)}}`, kept after ``burn_in`` every
-    ``thinning`` time steps.
-    """
-
-    particles: np.ndarray
 
 
 def run_sampler(
@@ -38,8 +23,12 @@ def run_sampler(
     step_size: float,
     learning_rate: float,
     random_seed: int | None,
-) -> PrOResult:
+) -> np.ndarray:
     """Run the PrO particle simulation loop.
+
+    Returns retained particle arrays with shape ``(n_retained, n_particles,
+    n_params)``. Each slice is an empirical particle measure at a retained
+    time step (after ``burn_in``, every ``thinning`` simulation steps).
 
     Each step: compile drift, then :func:`~pymc_prop.particles.time_step`.
     """
@@ -75,5 +64,6 @@ def run_sampler(
         if step >= burn_in and (step - burn_in) % thinning == 0:
             retained.append(particles.copy())
 
-    retained_arr = np.stack(retained, axis=0) if retained else np.empty((0, n_particles, particles.shape[1]))
-    return PrOResult(particles=retained_arr)
+    if retained:
+        return np.stack(retained, axis=0)
+    return np.empty((0, n_particles, particles.shape[1]))
