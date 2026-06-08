@@ -2,73 +2,89 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 
 from pymc.blocking import DictToArrayBijection
-from pymc.initial_point import make_initial_point_expression
-from pymc.sampling.forward import draw
+from pymc.initial_point import make_initial_point_fn
 
 from pymc_prop.points import PointMapper
 
 
-def initialize_particles(
-    start: np.ndarray,
+def _init_prior(
+    model,
+    mapper: PointMapper,
     n_particles: int,
-    rng: np.random.Generator,
-    jitter: float = 0.1,
+    seeds: np.ndarray,
+    *,
+    max_retries: int = 10,
+    logp_fn: Callable[[dict[str, np.ndarray]], Any] | None = None,
 ) -> np.ndarray:
-    """Place particles around a shared flat start with Gaussian jitter.
+    """Draw prior initial points per particle with finite-logp retry.
 
-    ``start`` is typically the raveled PyMC ``initial_point()`` (prior-centred
-    values in unconstrained ``value_vars`` space). Each row is
-    ``start + jitter * N(0, I)``, spreading an initial **empirical particle
-    measure**
-    :math:`\\widehat{Q}_0 = \\frac{1}{p}\\sum_j \\delta_{\\vartheta_0^{(j)}}`
-    so leave-one-particle-out measures :math:`Q_t^{(j)}` can interact from
-    step one (see :func:`~pymc_prop.compile.compile_drift_for_logscore`).
+    Modeled on PyMC ``_init_jitter`` without jitter: each particle draws from
+    ``make_initial_point_fn(..., default_strategy="prior")``; non-finite logp
+    triggers resampling up to ``max_retries``, then ``model.check_start_vals``.
     """
-    base = np.asarray(start, dtype=float)
-    noise = jitter * rng.standard_normal(size=(n_particles, base.size))
-    return base[None, :] + noise
+    ipfn = make_initial_point_fn(
+        model=model,
+        default_strategy="prior",
+        jitter_rvs=set(),
+        return_transformed=True,
+    )
+
+    if logp_fn is None:
+        model_logp_fn = model.compile_logp()
+    else:
+        model_logp_fn = logp_fn
+
+    population = []
+    for seed in seeds:
+        seed = int(seed)
+        rng = np.random.default_rng(seed)
+        for i in range(max_retries + 1):
+            point = ipfn(seed)
+            for name, value in mapper.start_point.items():
+                if name not in point:
+                    point[name] = np.asarray(value, dtype=float)
+
+            point_logp = model_logp_fn(point)
+            if not np.isfinite(point_logp):
+                if i == max_retries:
+                    model.check_start_vals(point)
+                seed = int(rng.integers(2**30, dtype=np.int64))
+            else:
+                break
+
+        population.append(DictToArrayBijection.map(point).data)
+
+    return np.asarray(population, dtype=float)
 
 
-def initialize_particles_from_prior(
+def initialize_particles(
     model,
     mapper: PointMapper,
     n_particles: int,
     rng: np.random.Generator,
+    *,
+    max_retries: int = 10,
 ) -> np.ndarray:
-    """Draw one prior sample per particle (SMC-style population init).
+    """Draw one prior sample per particle.
 
-    Uses ``make_initial_point_expression`` with ``default_strategy="prior"`` and
-    PyMC's :func:`~pymc.sampling.forward.draw`, then ravels each draw through
-    ``DictToArrayBijection`` into unconstrained ``value_vars`` space.
+    Each particle is an independent prior draw in unconstrained
+    ``value_vars`` space (Sec. 5, McLatchie et al. 2025). Non-finite joint
+    logp triggers resampling with a new seed (up to ``max_retries``).
     """
-    prior_expression = make_initial_point_expression(
-        free_rvs=model.free_RVs,
-        rvs_to_transforms=model.rvs_to_transforms,
-        initval_strategies={**model.rvs_to_initial_values},
-        default_strategy="prior",
-        return_transformed=True,
+    seeds = rng.integers(2**30, size=n_particles)
+    return _init_prior(
+        model=model,
+        mapper=mapper,
+        n_particles=n_particles,
+        seeds=seeds,
+        max_retries=max_retries,
     )
-    prior_var_names = [model.rvs_to_values[rv].name for rv in model.free_RVs]
-
-    prior_values = draw(prior_expression, draws=n_particles, random_seed=rng)
-
-    dict_prior = dict(zip(prior_var_names, prior_values))
-    population = []
-    for i in range(n_particles):
-        point = {
-            var.name: np.asarray(dict_prior[var.name][i], dtype=float)
-            for var in model.value_vars
-            if var.name in dict_prior
-        }
-        for name, value in mapper.start_point.items():
-            if name not in point:
-                point[name] = np.asarray(value, dtype=float)
-        population.append(DictToArrayBijection.map(point).data)
-
-    return np.asarray(population, dtype=float)
 
 
 def time_step(

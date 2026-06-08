@@ -20,8 +20,6 @@ def sample_pro(
     thinning: int = 1,
     step_size: float = 1e-3,
     learning_rate: float = 1.0,
-    init: Literal["jitter", "prior"] = "prior",
-    jitter: float = 0.1,
     random_seed: int | None = None,
 ) -> PrOResult:
     """Run the PrO particle sampler on a PyMC model.
@@ -35,17 +33,15 @@ def sample_pro(
         ``tune``: discard-only along a fixed ``n_steps`` horizon.
     thinning
         After ``burn_in``, keep every ``thinning``-th time step.
-    init
-        ``"jitter"``: each particle is initialized from ``model.initial_point()`` plus Gaussian noise;
-        ``"prior"``: each particle is initialized from the prior.
-    jitter
-        Scale for isotropic Gaussian noise when ``init="jitter"``.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
         McLatchie et al. 2025, https://arxiv.org/abs/2510.01915). Default ``1.0``.
         The compiled interaction sums over observations; this factor scales that sum
         in :func:`~pymc_prop.particles.time_step`.
+    random_seed
+        Seeds particle initialization (one independent prior draw per particle,
+        with finite-logp retry) and the Euler-Maruyama noise.
 
     See Also
     --------
@@ -66,11 +62,6 @@ def sample_pro(
         raise ValueError("thinning must be positive.")
     if step_size <= 0:
         raise ValueError("step_size must be positive.")
-    if init not in ("jitter", "prior"):
-        raise ValueError('init must be "jitter" or "prior".')
-    if jitter <= 0:
-        raise ValueError("jitter must be positive.")
-
     if isinstance(scoring_rule, str):
         if scoring_rule != "log":
             raise ValueError("Only log-score is supported in this version.")
@@ -89,6 +80,4 @@ def sample_pro(
         step_size=step_size,
         learning_rate=learning_rate,
         random_seed=random_seed,
-        init=init,
-        jitter=jitter,
     )

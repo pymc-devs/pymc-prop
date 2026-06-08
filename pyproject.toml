@@ -29,8 +29,7 @@ examples = [
   "jupyter",
   "ipykernel",
   "seaborn",
-  "palmerpenguins",
-  "scikit-learn",
+  "arviz-plots",
 ]
 
 [tool.pytest.ini_options]
