@@ -40,12 +40,12 @@ def test_sample_pro_returns_datatree_with_posterior():
     assert "posterior" in dt
     assert "mu" in dt.posterior
     assert set(dt.posterior.dims) >= {"chain", "draw"}
-    assert dt.posterior.attrs["sample_dims"] == ["chain", "draw"]
+    assert dt.posterior.attrs["sample_dims"] == ["draw", "chain"]
     assert dt.posterior.attrs["inference_library"] == "pymc"
 
     n_retained = _retained_count(60, 10, 5)
-    assert dt.posterior.sizes["chain"] == n_retained
-    assert dt.posterior.sizes["draw"] == 8
+    assert dt.posterior.sizes["draw"] == n_retained
+    assert dt.posterior.sizes["chain"] == 8
     assert dt.posterior["mu"].shape == (n_retained, 8)
     assert np.all(np.isfinite(dt.posterior["mu"].values))
 
@@ -97,11 +97,10 @@ def test_posterior_matches_point_mapper_unravel():
         random_seed=7,
     )
 
-    final_chain = dt.posterior.isel(chain=-1)["mu"].values
-    particles = dt.posterior["mu"].isel(chain=-1).values
-    for draw_idx in range(particles.shape[0]):
-        point = mapper.unravel(np.asarray([particles[draw_idx]], dtype=float))
-        np.testing.assert_allclose(point["mu"], final_chain[draw_idx], rtol=1e-8, atol=1e-8)
+    final_cloud = dt.posterior.isel(draw=-1)["mu"].values
+    for chain_idx in range(final_cloud.shape[0]):
+        point = mapper.unravel(np.asarray([final_cloud[chain_idx]], dtype=float))
+        np.testing.assert_allclose(point["mu"], final_cloud[chain_idx], rtol=1e-8, atol=1e-8)
 
 
 def test_extract_posterior_group():
@@ -138,7 +137,7 @@ def test_pro_step_coord_and_root_attrs():
     )
 
     expected_steps = np.array([2, 5, 8, 11])
-    np.testing.assert_array_equal(dt.posterior.coords["chain"].values, expected_steps)
+    np.testing.assert_array_equal(dt.posterior.coords["draw"].values, expected_steps)
     assert dt.attrs["pro_burn_in"] == 2
     assert dt.attrs["pro_thinning"] == 3
     assert dt.attrs["pro_n_steps"] == 12
@@ -158,8 +157,8 @@ def test_empty_retention_when_burn_in_exceeds_n_steps():
         random_seed=0,
     )
 
-    assert dt.posterior.sizes["chain"] == 0
-    assert dt.posterior.sizes["draw"] == 4
+    assert dt.posterior.sizes["draw"] == 0
+    assert dt.posterior.sizes["chain"] == 4
     assert dt.posterior["mu"].shape == (0, 4)
     assert "log_likelihood" not in dt
     assert "sample_stats" not in dt
@@ -239,11 +238,11 @@ def test_pro_to_datatree_direct_from_sampler():
         learning_rate=1.0,
     )
 
-    assert dt.posterior.sizes["chain"] == particles.shape[0]
-    assert dt.posterior.sizes["draw"] == 4
+    assert dt.posterior.sizes["draw"] == particles.shape[0]
+    assert dt.posterior.sizes["chain"] == 4
 
 
-def test_datatree_kwargs_merges_coords_without_losing_chain():
+def test_datatree_kwargs_merges_coords_without_losing_draw():
     with pm.Model(coords={"obs": ["a", "b"]}) as model:
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=[0.0, 1.0], dims="obs")
@@ -265,6 +264,6 @@ def test_datatree_kwargs_merges_coords_without_losing_chain():
         },
     )
 
-    np.testing.assert_array_equal(dt.posterior.coords["chain"].values, [0, 1])
-    assert dt.posterior.attrs["sample_dims"] == ["chain", "draw"]
+    np.testing.assert_array_equal(dt.posterior.coords["draw"].values, [0, 1])
+    assert dt.posterior.attrs["sample_dims"] == ["draw", "chain"]
     np.testing.assert_array_equal(dt.observed_data.coords["obs"].values, ["x", "y"])

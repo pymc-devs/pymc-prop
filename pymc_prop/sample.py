@@ -36,8 +36,8 @@ def sample_pro(
 
     Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
     ``observed_data``, ``log_likelihood``, and ``sample_stats`` groups.
-    Retained time steps map to the ``chain`` dimension; particles at
-    each time step map to ``draw``.
+    Retained simulation steps map to ``draw``; ensemble particles map
+    to ``chain``.
 
     Parameters
     ----------

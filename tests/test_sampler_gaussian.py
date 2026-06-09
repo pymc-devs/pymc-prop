@@ -28,7 +28,7 @@ def test_sample_pro_runs_gaussian():
     )
 
     assert "mu" in dt.posterior
-    assert dt.posterior.sizes["draw"] == 8
+    assert dt.posterior.sizes["chain"] == 8
     assert np.all(np.isfinite(dt.posterior["mu"].values))
 
 
