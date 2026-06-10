@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pymc.model import modelcontext
 from xarray import DataTree
 
-from pymc_prop.arviz import pro_to_datatree
+from pymc_prop.arviz import _pro_to_datatree
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore, ScoringRule
@@ -36,8 +36,8 @@ def sample_pro(
 
     Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
     ``observed_data``, ``log_likelihood``, and ``sample_stats`` groups.
-    Retained simulation steps map to ``draw``; ensemble particles map
-    to ``chain``.
+    Retained slices map to ``draw``; simulation step
+    numbers are in the ``step`` coordinate; particles map to ``chain``.
 
     Parameters
     ----------
@@ -63,7 +63,7 @@ def sample_pro(
         ``include_log_likelihood=False`` to skip the post-sampling logp pass
         when only particle trajectories are needed.
     datatree_kwargs
-        Extra keyword arguments forwarded to :func:`~pymc_prop.arviz.pro_to_datatree`
+        Extra keyword arguments forwarded to the internal DataTree builder
         (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
         use the top-level parameters above; ``sample_dims`` cannot be overridden.
 
@@ -73,8 +73,6 @@ def sample_pro(
         Log-score WGF drift (compiled interaction + prior grad).
     LogScore
         Scoring-rule wrapper used by default.
-    pro_to_datatree
-        Convert retained particles to an ArviZ DataTree.
     """
     model = modelcontext(model)
 
@@ -108,13 +106,12 @@ def sample_pro(
         random_seed=random_seed,
     )
 
-    return pro_to_datatree(
+    return _pro_to_datatree(
         particles,
         model=model,
         mapper=mapper,
         burn_in=burn_in,
         thinning=thinning,
-        n_steps=n_steps,
         learning_rate=learning_rate,
         coords=coords,
         dims=dims,

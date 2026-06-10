@@ -18,13 +18,13 @@ from xarray import DataTree
 from pymc_prop.compile import compile_batched_observed_logp_score
 from pymc_prop.points import PointMapper, flat_to_value_vars
 
-# draw = retained simulation steps; chain = ensemble particles
+# draw = retained index; chain = ensemble particles; step = simulation step
 _SAMPLE_DIMS = ["draw", "chain"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
 
 
 def _retained_step_indices(burn_in: int, thinning: int, n_retained: int) -> np.ndarray:
-    """Simulation step index for each retained slice (maps to the ``draw`` coord)."""
+    """Simulation step index for each retained slice (maps to the ``step`` coord)."""
     return np.asarray([burn_in + i * thinning for i in range(n_retained)], dtype=int)
 
 
@@ -216,19 +216,20 @@ def _compute_sample_stats(
 
     if log_likelihood:
         total = sum(np.asarray(arr, dtype=float) for arr in log_likelihood.values())
-        mean_score = np.mean(np.sum(total, axis=-1), axis=1)
+        per_particle = np.sum(total, axis=-1)
+        mean_score = np.mean(per_particle, axis=1)
+        se_score = np.std(per_particle, axis=1, ddof=1) / np.sqrt(n_particles)
         stats["mean_log_score"] = _broadcast_draw_stat(mean_score, n_particles)
+        stats["se_log_score"] = _broadcast_draw_stat(se_score, n_particles)
 
     return stats
 
 
-def _apply_datatree_kwargs(
+def _merge_datatree_build_kwargs(
     kwargs: dict[str, Any],
     datatree_kwargs: dict[str, Any] | None,
-    *,
-    draw_coord: np.ndarray,
 ) -> None:
-    """Merge user ``datatree_kwargs`` without clobbering PrO schema invariants."""
+    """Merge user ``datatree_kwargs`` into ``from_dict`` kwargs (pre-build)."""
     if not datatree_kwargs:
         return
 
@@ -248,17 +249,31 @@ def _apply_datatree_kwargs(
         else:
             kwargs[key] = value
 
-    kwargs["coords"]["draw"] = draw_coord
+
+def _attach_pro_coords(
+    dt: DataTree,
+    *,
+    draw_coord: np.ndarray,
+    step_coord: np.ndarray | None,
+) -> None:
+    """Attach PrO ``draw`` and ``step`` coords to groups with a draw dimension."""
+    for name in list(dt.children):
+        node = dt[name]
+        if "draw" not in node.dims:
+            continue
+        ds = node.dataset.assign_coords(draw=draw_coord)
+        if step_coord is not None:
+            ds = ds.assign_coords(step=("draw", step_coord))
+        dt[name] = ds
 
 
-def pro_to_datatree(
+def _pro_to_datatree(
     particles: np.ndarray,
     *,
     model=None,
     mapper: PointMapper,
     burn_in: int,
     thinning: int,
-    n_steps: int,
     learning_rate: float,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
@@ -270,12 +285,13 @@ def pro_to_datatree(
     """Package retained PrO particles as an ArviZ DataTree.
 
     The sampler ndarray has shape ``(n_retained, n_particles, flat)``.
-    ArviZ ``sample_dims`` follow the convention: ``draw`` indexes
-    retained simulation steps; ``chain`` indexes ensemble particles.
+    ArviZ ``sample_dims``: ``draw`` is a retained index;
+    ``step`` stores the simulation step number; ``chain`` indexes particles.
     """
     model = modelcontext(model)
     n_retained, n_particles = particles.shape[:2]
-    draw_coord = _retained_step_indices(burn_in, thinning, n_retained)
+    draw_coord = np.arange(n_retained, dtype=int)
+    step_coord = (_retained_step_indices(burn_in, thinning, n_retained) if n_retained > 0 else None)
 
     posterior = _particles_to_posterior(particles, model, mapper)
     merged_coords = _merged_coords(model, coords)
@@ -301,13 +317,7 @@ def pro_to_datatree(
         )
 
     pymc_attrs = make_attrs(inference_library=pymc, sample_dims=_SAMPLE_DIMS)
-    group_attrs = {
-        "/": {
-            "pro_burn_in": burn_in,
-            "pro_thinning": thinning,
-            "pro_n_steps": n_steps,
-            "pro_learning_rate": learning_rate,
-        },
+    group_attrs: dict[str, dict[str, Any]] = {
         "posterior": dict(pymc_attrs),
     }
     if include_log_likelihood and model.observed_RVs and n_retained > 0:
@@ -321,6 +331,9 @@ def pro_to_datatree(
         "dims": merged_dims,
         "attrs": group_attrs,
     }
-    _apply_datatree_kwargs(kwargs, datatree_kwargs, draw_coord=draw_coord)
+    _merge_datatree_build_kwargs(kwargs, datatree_kwargs)
+    kwargs["coords"]["draw"] = draw_coord
 
-    return from_dict(data, **kwargs)
+    dt = from_dict(data, **kwargs)
+    _attach_pro_coords(dt, draw_coord=draw_coord, step_coord=step_coord)
+    return dt

@@ -3,7 +3,7 @@ import pymc as pm
 from arviz_base import extract
 from xarray import DataTree
 
-from pymc_prop.arviz import pro_to_datatree
+from pymc_prop.arviz import _pro_to_datatree
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sample import sample_pro
 from pymc_prop.sampler import run_sampler
@@ -77,7 +77,7 @@ def test_datatree_includes_observed_log_likelihood_and_sample_stats():
     assert set(dt.log_likelihood["y"].dims) >= {"chain", "draw", "obs"}
 
     assert "sample_stats" in dt
-    for var in ("particle_spread", "mean_log_score", "learning_rate", "mu_spread"):
+    for var in ("particle_spread", "mean_log_score", "se_log_score", "learning_rate", "mu_spread"):
         assert var in dt.sample_stats
 
 
@@ -121,7 +121,7 @@ def test_extract_posterior_group():
     assert "mu" in extracted.data_vars
 
 
-def test_pro_step_coord_and_root_attrs():
+def test_pro_draw_and_step_coords():
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
@@ -136,13 +136,8 @@ def test_pro_step_coord_and_root_attrs():
         random_seed=4,
     )
 
-    expected_steps = np.array([2, 5, 8, 11])
-    np.testing.assert_array_equal(dt.posterior.coords["draw"].values, expected_steps)
-    assert dt.attrs["pro_burn_in"] == 2
-    assert dt.attrs["pro_thinning"] == 3
-    assert dt.attrs["pro_n_steps"] == 12
-    assert dt.attrs["pro_learning_rate"] == 0.5
-
+    np.testing.assert_array_equal(dt.posterior.coords["draw"].values, [0, 1, 2, 3])
+    np.testing.assert_array_equal(dt.posterior.coords["step"].values, [2, 5, 8, 11])
 
 def test_empty_retention_when_burn_in_exceeds_n_steps():
     with pm.Model() as model:
@@ -183,6 +178,7 @@ def test_include_log_likelihood_false_skips_group():
     assert "posterior" in dt
     assert "log_likelihood" not in dt
     assert "mean_log_score" not in dt.sample_stats
+    assert "se_log_score" not in dt.sample_stats
 
 
 def test_multi_observed_rv_log_likelihood():
@@ -228,18 +224,21 @@ def test_pro_to_datatree_direct_from_sampler():
         random_seed=5,
     )
 
-    dt = pro_to_datatree(
+    dt = _pro_to_datatree(
         particles,
         model=model,
         mapper=mapper,
         burn_in=0,
         thinning=2,
-        n_steps=8,
         learning_rate=1.0,
     )
 
     assert dt.posterior.sizes["draw"] == particles.shape[0]
     assert dt.posterior.sizes["chain"] == 4
+
+    per_particle = np.sum(dt.log_likelihood["y"].values, axis=-1)
+    expected_se = np.std(per_particle, axis=1, ddof=1) / np.sqrt(4)
+    np.testing.assert_allclose(dt.sample_stats["se_log_score"].isel(chain=0).values, expected_se, rtol=1e-8)
 
 
 def test_datatree_kwargs_merges_coords_without_losing_draw():
@@ -250,20 +249,20 @@ def test_datatree_kwargs_merges_coords_without_losing_draw():
     mapper = make_point_mapper(model)
     particles = np.zeros((2, 3, mapper.ravel(model.initial_point()).size))
 
-    dt = pro_to_datatree(
+    dt = _pro_to_datatree(
         particles,
         model=model,
         mapper=mapper,
         burn_in=0,
         thinning=1,
-        n_steps=2,
         learning_rate=1.0,
         datatree_kwargs={
-            "coords": {"obs": ["x", "y"]},
+            "coords": {"obs": ["x", "y"], "draw": [99, 100], "step": [99, 100]},
             "sample_dims": ["draw", "chain"],
         },
     )
 
     np.testing.assert_array_equal(dt.posterior.coords["draw"].values, [0, 1])
+    np.testing.assert_array_equal(dt.posterior.coords["step"].values, [0, 1])
     assert dt.posterior.attrs["sample_dims"] == ["draw", "chain"]
     np.testing.assert_array_equal(dt.observed_data.coords["obs"].values, ["x", "y"])
