@@ -45,10 +45,10 @@ with pm.Model() as model:
     mu = pm.Normal("mu", mu=0.0, sigma=1.0)
     pm.Normal("y", mu=mu, sigma=1.0, observed=y)
 
-    result = sample_pro(n_particles=32, n_steps=500, random_seed=0)
+    dt = sample_pro(n_particles=32, n_steps=500, random_seed=0)
 ```
 
-`result` is a `PrOResult` with particle traces. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, `step_size`, and `learning_rate` for your model.
+`dt` is an ArviZ `DataTree` with `posterior`, `observed_data`, `log_likelihood`, and `sample_stats` groups. `draw` is a retained index; `step` stores the simulation step number; particles map to `chain`. For the final particle cloud, use `dt.posterior.isel(draw=-1)`. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, `step_size`, and `learning_rate` for your model.
 
 ## Tutorials
 
@@ -64,7 +64,7 @@ Import from `pymc_prop`:
 
 | Symbol | Role |
 |--------|------|
-| `sample_pro` | Main entry: run the PrO particle sampler on a PyMC model |
+| `sample_pro` | Main entry: run the PrO particle sampler; returns an xarray `DataTree`, following the InferenceData schema |
 | `LogScore` | Log-score scoring rule (drift via `compile_drift_for_logscore`) |
 | `ScoringRule` | Protocol for scoring rules (extensible) |
 | `compile_prior_gradient` | Compile ∇ log π (prior only) in unconstrained space |
