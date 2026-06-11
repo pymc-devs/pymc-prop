@@ -42,7 +42,7 @@ def sample_pro(
     ----------
     n_steps
         Number of retained simulation steps (maps to the ``draw`` dimension).
-        The sampler runs ``tune + n_steps`` total EM steps.
+        The sampler runs ``tune + n_steps`` total simulation steps.
     tune
         Warmup simulation steps discarded before retention. Unlike
         ``pm.sample``'s ``tune``, there is no separate adaptation phase

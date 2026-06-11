@@ -26,7 +26,7 @@ def run_sampler(
     """Run the PrO particle simulation loop.
 
     Returns retained particle arrays with shape ``(n_steps, n_particles,
-    n_params)``. The loop runs ``tune + n_steps`` EM steps; each draw after
+    n_params)``. The loop runs ``tune + n_steps`` Euler-Maruyama steps; each draw after
     warmup is an empirical particle measure at a retained simulation step.
 
     Each step: compile drift, then :func:`~pymc_prop.particles.time_step`.

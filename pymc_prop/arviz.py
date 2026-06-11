@@ -23,11 +23,6 @@ _SAMPLE_DIMS = ["draw", "chain"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
 
 
-def _retained_step_indices(tune: int, n_retained: int) -> np.ndarray:
-    """Simulation step index for each retained draw (maps to the ``step`` coord)."""
-    return np.arange(tune, tune + n_retained, dtype=int)
-
-
 def _particles_to_posterior(
     particles: np.ndarray,
     model,
@@ -283,14 +278,15 @@ def _pro_to_datatree(
 ) -> DataTree:
     """Package retained PrO particles as an ArviZ DataTree.
 
-    The sampler ndarray has shape ``(n_retained, n_particles, flat)``.
-    ArviZ ``sample_dims``: ``draw`` is a retained index;
-    ``step`` stores the simulation step number; ``chain`` indexes particles.
+    The sampler ndarray has shape ``(n_steps, n_particles, flat)`` on the
+    normal :func:`~pymc_prop.sampler.run_sampler` path. ArviZ ``sample_dims``:
+    ``draw`` is a retained index; ``step`` is ``tune + draw``; ``chain``
+    indexes particles.
     """
     model = modelcontext(model)
     n_retained, n_particles = particles.shape[:2]
     draw_coord = np.arange(n_retained, dtype=int)
-    step_coord = (_retained_step_indices(tune, n_retained) if n_retained > 0 else None)
+    step_coord = (np.arange(tune, tune + n_retained, dtype=int) if n_retained > 0 else None)
 
     posterior = _particles_to_posterior(particles, model, mapper)
     merged_coords = _merged_coords(model, coords)
