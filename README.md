@@ -64,7 +64,7 @@ Import from `pymc_prop`:
 
 | Symbol | Role |
 |--------|------|
-| `sample_pro` | Main entry: run the PrO particle sampler; returns an ArviZ `DataTree` |
+| `sample_pro` | Main entry: run the PrO particle sampler; returns an xarray `DataTree`, following the InferenceData schema |
 | `LogScore` | Log-score scoring rule (drift via `compile_drift_for_logscore`) |
 | `ScoringRule` | Protocol for scoring rules (extensible) |
 | `compile_prior_gradient` | Compile ∇ log π (prior only) in unconstrained space |
