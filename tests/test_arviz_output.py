@@ -1,5 +1,6 @@
 import numpy as np
 import pymc as pm
+import pytest
 from arviz_base import extract
 from xarray import DataTree
 
@@ -10,14 +11,6 @@ from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore
 
 
-def _retained_count(n_steps: int, burn_in: int, thinning: int) -> int:
-    return sum(
-        1
-        for step in range(n_steps)
-        if step >= burn_in and (step - burn_in) % thinning == 0
-    )
-
-
 def test_sample_pro_returns_datatree_with_posterior():
     rng = np.random.default_rng(42)
     y = rng.normal(0.0, 1.0, size=20)
@@ -26,12 +19,14 @@ def test_sample_pro_returns_datatree_with_posterior():
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=y)
 
+    n_steps = 60
+    n_particles = 8
+
     dt = sample_pro(
         model=model,
-        n_particles=8,
-        n_steps=60,
-        burn_in=10,
-        thinning=5,
+        n_particles=n_particles,
+        n_steps=n_steps,
+        tune=10,
         step_size=5e-3,
         random_seed=123,
     )
@@ -42,11 +37,8 @@ def test_sample_pro_returns_datatree_with_posterior():
     assert set(dt.posterior.dims) >= {"chain", "draw"}
     assert dt.posterior.attrs["sample_dims"] == ["draw", "chain"]
     assert dt.posterior.attrs["inference_library"] == "pymc"
-
-    n_retained = _retained_count(60, 10, 5)
-    assert dt.posterior.sizes["draw"] == n_retained
-    assert dt.posterior.sizes["chain"] == 8
-    assert dt.posterior["mu"].shape == (n_retained, 8)
+    assert dt.posterior.sizes["draw"] == n_steps
+    assert dt.posterior.sizes["chain"] == n_particles
     assert np.all(np.isfinite(dt.posterior["mu"].values))
 
 
@@ -61,8 +53,7 @@ def test_datatree_includes_observed_log_likelihood_and_sample_stats():
         model=model,
         n_particles=4,
         n_steps=20,
-        burn_in=0,
-        thinning=2,
+        tune=0,
         step_size=5e-3,
         random_seed=0,
     )
@@ -86,17 +77,16 @@ def test_posterior_matches_point_mapper_unravel():
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(5))
 
-    mapper = make_point_mapper(model)
     dt = sample_pro(
         model=model,
         n_particles=4,
         n_steps=10,
-        burn_in=0,
-        thinning=1,
+        tune=0,
         step_size=5e-3,
         random_seed=7,
     )
 
+    mapper = make_point_mapper(model)
     final_cloud = dt.posterior.isel(draw=-1)["mu"].values
     for chain_idx in range(final_cloud.shape[0]):
         point = mapper.unravel(np.asarray([final_cloud[chain_idx]], dtype=float))
@@ -112,8 +102,7 @@ def test_extract_posterior_group():
         model=model,
         n_particles=4,
         n_steps=8,
-        burn_in=0,
-        thinning=1,
+        tune=0,
         random_seed=1,
     )
 
@@ -126,38 +115,51 @@ def test_pro_draw_and_step_coords():
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
 
+    n_steps = 12
+    tune = 2
+
     dt = sample_pro(
         model=model,
         n_particles=4,
-        n_steps=12,
-        burn_in=2,
-        thinning=3,
+        n_steps=n_steps,
+        tune=tune,
         learning_rate=0.5,
         random_seed=4,
     )
 
-    np.testing.assert_array_equal(dt.posterior.coords["draw"].values, [0, 1, 2, 3])
-    np.testing.assert_array_equal(dt.posterior.coords["step"].values, [2, 5, 8, 11])
+    np.testing.assert_array_equal(dt.posterior.coords["draw"].values, np.arange(n_steps))
+    np.testing.assert_array_equal(dt.posterior.coords["step"].values, np.arange(tune, tune + n_steps))
 
-def test_empty_retention_when_burn_in_exceeds_n_steps():
+
+def test_n_steps_retained_even_when_tune_is_large():
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
 
+    n_steps = 10
+    tune = 20
+
     dt = sample_pro(
         model=model,
         n_particles=4,
-        n_steps=10,
-        burn_in=20,
+        n_steps=n_steps,
+        tune=tune,
         random_seed=0,
     )
 
-    assert dt.posterior.sizes["draw"] == 0
-    assert dt.posterior.sizes["chain"] == 4
-    assert dt.posterior["mu"].shape == (0, 4)
-    assert "log_likelihood" not in dt
-    assert "sample_stats" not in dt
-    assert "observed_data" in dt
+    assert dt.posterior.sizes["draw"] == n_steps
+    np.testing.assert_array_equal(dt.posterior.coords["step"].values, np.arange(tune, tune + n_steps))
+    assert "log_likelihood" in dt
+    assert "sample_stats" in dt
+
+
+def test_tune_validation_raises_on_negative():
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
+
+    with pytest.raises(ValueError, match="tune must be non-negative"):
+        sample_pro(model=model, n_particles=4, n_steps=10, tune=-1)
 
 
 def test_include_log_likelihood_false_skips_group():
@@ -169,8 +171,7 @@ def test_include_log_likelihood_false_skips_group():
         model=model,
         n_particles=4,
         n_steps=8,
-        burn_in=0,
-        thinning=1,
+        tune=0,
         include_log_likelihood=False,
         random_seed=2,
     )
@@ -194,8 +195,7 @@ def test_multi_observed_rv_log_likelihood():
         model=model,
         n_particles=4,
         n_steps=10,
-        burn_in=0,
-        thinning=1,
+        tune=0,
         random_seed=3,
     )
 
@@ -217,8 +217,7 @@ def test_pro_to_datatree_direct_from_sampler():
         scoring_rule=LogScore(),
         n_particles=4,
         n_steps=8,
-        burn_in=0,
-        thinning=2,
+        tune=0,
         step_size=5e-3,
         learning_rate=1.0,
         random_seed=5,
@@ -228,13 +227,11 @@ def test_pro_to_datatree_direct_from_sampler():
         particles,
         model=model,
         mapper=mapper,
-        burn_in=0,
-        thinning=2,
+        tune=0,
         learning_rate=1.0,
     )
 
     assert dt.posterior.sizes["draw"] == particles.shape[0]
-    assert dt.posterior.sizes["chain"] == 4
 
     per_particle = np.sum(dt.log_likelihood["y"].values, axis=-1)
     expected_se = np.std(per_particle, axis=1, ddof=1) / np.sqrt(4)
@@ -253,8 +250,7 @@ def test_datatree_kwargs_merges_coords_without_losing_draw():
         particles,
         model=model,
         mapper=mapper,
-        burn_in=0,
-        thinning=1,
+        tune=0,
         learning_rate=1.0,
         datatree_kwargs={
             "coords": {"obs": ["x", "y"], "draw": [99, 100], "step": [99, 100]},

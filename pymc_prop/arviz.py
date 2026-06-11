@@ -23,9 +23,9 @@ _SAMPLE_DIMS = ["draw", "chain"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
 
 
-def _retained_step_indices(burn_in: int, thinning: int, n_retained: int) -> np.ndarray:
-    """Simulation step index for each retained slice (maps to the ``step`` coord)."""
-    return np.asarray([burn_in + i * thinning for i in range(n_retained)], dtype=int)
+def _retained_step_indices(tune: int, n_retained: int) -> np.ndarray:
+    """Simulation step index for each retained draw (maps to the ``step`` coord)."""
+    return np.arange(tune, tune + n_retained, dtype=int)
 
 
 def _particles_to_posterior(
@@ -272,8 +272,7 @@ def _pro_to_datatree(
     *,
     model=None,
     mapper: PointMapper,
-    burn_in: int,
-    thinning: int,
+    tune: int,
     learning_rate: float,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
@@ -291,7 +290,7 @@ def _pro_to_datatree(
     model = modelcontext(model)
     n_retained, n_particles = particles.shape[:2]
     draw_coord = np.arange(n_retained, dtype=int)
-    step_coord = (_retained_step_indices(burn_in, thinning, n_retained) if n_retained > 0 else None)
+    step_coord = (_retained_step_indices(tune, n_retained) if n_retained > 0 else None)
 
     posterior = _particles_to_posterior(particles, model, mapper)
     merged_coords = _merged_coords(model, coords)

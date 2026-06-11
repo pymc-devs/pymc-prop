@@ -48,7 +48,7 @@ with pm.Model() as model:
     dt = sample_pro(n_particles=32, n_steps=500, random_seed=0)
 ```
 
-`dt` is an ArviZ `DataTree` with `posterior`, `observed_data`, `log_likelihood`, and `sample_stats` groups. `draw` is a retained index; `step` stores the simulation step number; particles map to `chain`. For the final particle cloud, use `dt.posterior.isel(draw=-1)`. Tune `n_particles`, `n_steps`, `burn_in`, `thinning`, `step_size`, and `learning_rate` for your model.
+`dt` is an ArviZ `DataTree` with `posterior`, `observed_data`, `log_likelihood`, and `sample_stats` groups. `draw` is a retained index; `step` stores the simulation step number; particles map to `chain`. For the final particle cloud, use `dt.posterior.isel(draw=-1)`. `n_steps` is the number of retained draws; the sampler runs `tune + n_steps` total EM steps. Adjust `n_particles`, `n_steps`, `tune`, `step_size`, and `learning_rate` for your model. Subsample with `dt.isel(draw=slice(None, None, k))` if you need fewer points in post-processing.
 
 ## Tutorials
 

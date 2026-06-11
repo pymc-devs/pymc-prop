@@ -18,17 +18,16 @@ def run_sampler(
     scoring_rule: ScoringRule,
     n_particles: int,
     n_steps: int,
-    burn_in: int,
-    thinning: int,
+    tune: int,
     step_size: float,
     learning_rate: float,
     random_seed: int | None,
 ) -> np.ndarray:
     """Run the PrO particle simulation loop.
 
-    Returns retained particle arrays with shape ``(n_retained, n_particles,
-    n_params)``. Each slice is an empirical particle measure at a retained
-    time step (after ``burn_in``, every ``thinning`` simulation steps).
+    Returns retained particle arrays with shape ``(n_steps, n_particles,
+    n_params)``. The loop runs ``tune + n_steps`` EM steps; each draw after
+    warmup is an empirical particle measure at a retained simulation step.
 
     Each step: compile drift, then :func:`~pymc_prop.particles.time_step`.
     """
@@ -48,7 +47,7 @@ def run_sampler(
 
     retained: List[np.ndarray] = []
 
-    for step in range(n_steps):
+    for step in range(tune + n_steps):
         # compile_drift_for_logscore -> time_step
         if drift_fn is not None:
             wgf_grad, prior_grad = drift_fn(particles)
@@ -61,7 +60,7 @@ def run_sampler(
             particles, prior_grad, wgf_grad, step_size, learning_rate, rng
         )
 
-        if step >= burn_in and (step - burn_in) % thinning == 0:
+        if step >= tune:
             retained.append(particles.copy())
 
     if retained:
