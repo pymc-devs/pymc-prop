@@ -9,7 +9,6 @@ from pymc_prop.sample import sample_pro
 
 
 def test_sample_pro_runs_gaussian():
-    # smoke: full simulation loop returns finite retained particles (burn_in + thinning)
     rng = np.random.default_rng(42)
     y = rng.normal(0.0, 1.0, size=20)
 
@@ -17,17 +16,18 @@ def test_sample_pro_runs_gaussian():
         mu = pm.Normal("mu", mu=0.0, sigma=1.0)
         pm.Normal("y", mu=mu, sigma=1.0, observed=y)
 
+    n_steps = 60
     dt = sample_pro(
         model=model,
         n_particles=8,
-        n_steps=60,
-        burn_in=10,
-        thinning=5,
+        n_steps=n_steps,
+        tune=10,
         step_size=5e-3,
         random_seed=123,
     )
 
     assert "mu" in dt.posterior
+    assert dt.posterior.sizes["draw"] == n_steps
     assert dt.posterior.sizes["chain"] == 8
     assert np.all(np.isfinite(dt.posterior["mu"].values))
 

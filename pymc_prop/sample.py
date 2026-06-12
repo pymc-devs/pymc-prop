@@ -18,8 +18,7 @@ def sample_pro(
     scoring_rule: Literal["log"] | ScoringRule = "log",
     n_particles: int = 64,
     n_steps: int = 1000,
-    burn_in: int = 200,
-    thinning: int = 1,
+    tune: int = 200,
     step_size: float = 1e-3,
     learning_rate: float = 1.0,
     random_seed: int | None = None,
@@ -36,16 +35,18 @@ def sample_pro(
 
     Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
     ``observed_data``, ``log_likelihood``, and ``sample_stats`` groups.
-    Retained slices map to ``draw``; simulation step
+    Retained steps map to ``draw``; simulation step
     numbers are in the ``step`` coordinate; particles map to ``chain``.
 
     Parameters
     ----------
-    burn_in
-        Time steps to discard before retaining steps. Not ``pm.sample``
-        ``tune``: discard-only along a fixed ``n_steps`` horizon.
-    thinning
-        After ``burn_in``, keep every ``thinning``-th retained step.
+    n_steps
+        Number of retained simulation steps (maps to the ``draw`` dimension).
+        The sampler runs ``tune + n_steps`` total simulation steps.
+    tune
+        Warmup simulation steps discarded before retention. Unlike
+        ``pm.sample``'s ``tune``, there is no separate adaptation phase
+        during warmup yet.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
@@ -80,10 +81,8 @@ def sample_pro(
         raise ValueError("n_particles must be at least 2.")
     if n_steps <= 0:
         raise ValueError("n_steps must be positive.")
-    if burn_in < 0:
-        raise ValueError("burn_in must be non-negative.")
-    if thinning <= 0:
-        raise ValueError("thinning must be positive.")
+    if tune < 0:
+        raise ValueError("tune must be non-negative.")
     if step_size <= 0:
         raise ValueError("step_size must be positive.")
     if isinstance(scoring_rule, str):
@@ -99,8 +98,7 @@ def sample_pro(
         scoring_rule=scoring_rule,
         n_particles=n_particles,
         n_steps=n_steps,
-        burn_in=burn_in,
-        thinning=thinning,
+        tune=tune,
         step_size=step_size,
         learning_rate=learning_rate,
         random_seed=random_seed,
@@ -110,8 +108,7 @@ def sample_pro(
         particles,
         model=model,
         mapper=mapper,
-        burn_in=burn_in,
-        thinning=thinning,
+        tune=tune,
         learning_rate=learning_rate,
         coords=coords,
         dims=dims,
