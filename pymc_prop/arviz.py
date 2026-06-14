@@ -2,15 +2,27 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import pymc
 import pytensor.tensor as pt
+import xarray as xr
+from scipy.special import logsumexp
 from arviz_base import from_dict
-from arviz_base.base import make_attrs
+from arviz_base.base import dict_to_dataset, make_attrs
+from pymc.backends.arviz import _DefaultTrace, dataset_to_point_list
+from pymc.backends.arviz import predictions_to_inference_data, to_inference_data
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.model import modelcontext
+from pymc.sampling.forward import (
+    _build_constant_data,
+    compile_forward_sampling_function,
+    get_vars_in_point_list,
+    observed_dependent_deterministics,
+)
+from pymc.util import _get_seeds_per_chain, get_default_varnames, point_wrapper
 from pytensor.graph.replace import graph_replace
 from pytensor.scan import scan
 from xarray import DataTree
@@ -20,7 +32,9 @@ from pymc_prop.points import PointMapper, flat_to_value_vars
 
 # draw = retained index; chain = ensemble particles; step = simulation step
 _SAMPLE_DIMS = ["draw", "chain"]
+_MIXTURE_SAMPLE_DIMS = ["draw"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
+_VECTORIZE_FALLBACK_ERRORS = (TypeError, ValueError, AttributeError, NotImplementedError)
 
 
 def _particles_to_posterior(
@@ -128,7 +142,7 @@ def _compile_batched_logp_for_rv(model, mapper: PointMapper, rv) -> Any:
     particles = pt.matrix("particles")
     try:
         logp = _batched_logp_single_rv_graph(particles, model, mapper, rv, use_scan=False)
-    except Exception:
+    except _VECTORIZE_FALLBACK_ERRORS:
         logp = _batched_logp_single_rv_graph(particles, model, mapper, rv, use_scan=True)
     return model.compile_fn(
         inputs=[particles],
@@ -178,6 +192,38 @@ def _compute_log_likelihood(
     return log_likelihood
 
 
+def _compute_mixture_log_predictive(
+    log_likelihood: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Empirical mixture log predictive log p_{hat Q}(y) over uniform particle weights."""
+    mixture: dict[str, np.ndarray] = {}
+    for name, ll in log_likelihood.items():
+        ll = np.asarray(ll, dtype=float)
+        n_particles = ll.shape[1]
+        mixture[name] = logsumexp(ll, axis=1) - np.log(n_particles)
+    return mixture
+
+
+def _mixture_log_predictive_to_dataset(
+    mixture_log_predictive: dict[str, np.ndarray],
+    *,
+    coords: dict[str, Any],
+    dims: dict[str, list[str]],
+    attrs: dict[str, Any],
+) -> xr.Dataset:
+    """Build mixture log predictive dataset without a particle ``chain`` dimension."""
+    mixture_coords = {k: v for k, v in coords.items() if k != "chain"}
+    return dict_to_dataset(
+        mixture_log_predictive,
+        attrs=attrs,
+        coords=mixture_coords,
+        dims=dims,
+        sample_dims=_MIXTURE_SAMPLE_DIMS,
+        skip_event_dims=True,
+        inference_library=pymc,
+    )
+
+
 def _broadcast_draw_stat(values: np.ndarray, n_particles: int) -> np.ndarray:
     """Broadcast step-only diagnostics to the standard (draw, chain) layout."""
     values = np.asarray(values, dtype=float)
@@ -191,6 +237,8 @@ def _compute_sample_stats(
     posterior: dict[str, np.ndarray],
     log_likelihood: dict[str, np.ndarray],
     learning_rate: float,
+    *,
+    mixture_log_predictive: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     """PrO-specific diagnostics derived from retained particle clouds."""
     n_retained, n_particles = particles.shape[:2]
@@ -216,6 +264,13 @@ def _compute_sample_stats(
         se_score = np.std(per_particle, axis=1, ddof=1) / np.sqrt(n_particles)
         stats["mean_log_score"] = _broadcast_draw_stat(mean_score, n_particles)
         stats["se_log_score"] = _broadcast_draw_stat(se_score, n_particles)
+
+    if mixture_log_predictive:
+        total = sum(
+            np.sum(np.asarray(arr, dtype=float), axis=tuple(range(1, arr.ndim)))
+            for arr in mixture_log_predictive.values()
+        )
+        stats["mixture_log_predictive_total"] = _broadcast_draw_stat(total, n_particles)
 
     return stats
 
@@ -250,9 +305,14 @@ def _attach_pro_coords(
     *,
     draw_coord: np.ndarray,
     step_coord: np.ndarray | None,
+    groups: Sequence[str] | None = None,
 ) -> None:
     """Attach PrO ``draw`` and ``step`` coords to groups with a draw dimension."""
-    for name in list(dt.children):
+    if groups is None:
+        groups = list(dt.children)
+    for name in groups:
+        if name not in dt.children:
+            continue
         node = dt[name]
         if "draw" not in node.dims:
             continue
@@ -260,6 +320,211 @@ def _attach_pro_coords(
         if step_coord is not None:
             ds = ds.assign_coords(step=("draw", step_coord))
         dt[name] = ds
+
+
+def _select_posterior_draws(posterior: xr.Dataset, draw: int | slice | Sequence[int]) -> xr.Dataset:
+    """Select retained simulation snapshots from a PrO ``posterior`` group."""
+    if "draw" not in posterior.dims:
+        raise ValueError("posterior must have a draw dimension.")
+
+    n_draw = int(posterior.sizes["draw"])
+    if isinstance(draw, int):
+        idx = draw if draw >= 0 else n_draw + draw
+        if idx < 0 or idx >= n_draw:
+            raise ValueError(f"draw index {draw!r} out of range for size {n_draw}.")
+        return posterior.isel(draw=[idx])
+    return posterior.isel(draw=draw)
+
+
+def _trace_constant_data_from_datatree(dt: DataTree | None) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Recover trace-time constant data and coords from a PrO DataTree."""
+    trace_constant_data: dict[str, np.ndarray] = {}
+    trace_coords: dict[str, np.ndarray] = {}
+    if dt is None:
+        return trace_constant_data, trace_coords
+
+    constant_data = dt.get("constant_data", None)
+    if constant_data is not None:
+        trace_coords.update({str(k): np.asarray(v) for k, v in constant_data.coords.items()})
+        trace_constant_data.update({str(k): np.asarray(v) for k, v in constant_data.items()})
+
+    if "posterior" in dt.children:
+        posterior = dt["posterior"].dataset
+        for dim in ("draw", "chain"):
+            if dim in posterior.coords:
+                trace_coords.setdefault(dim, np.asarray(posterior.coords[dim].values))
+
+    observed_data = dt.get("observed_data", None)
+    if observed_data is not None:
+        for name in observed_data.data_vars:
+            trace_constant_data.setdefault(name, np.asarray(observed_data[name].values))
+        trace_coords.update({str(k): np.asarray(v) for k, v in observed_data.coords.items()})
+
+    return trace_constant_data, trace_coords
+
+
+def _resolve_forward_output_vars(
+    model,
+    *,
+    var_names: Sequence[str] | None,
+    observed_data: xr.Dataset | None,
+):
+    """Choose model outputs for a forward pass (PyMC PPC default)."""
+    if var_names is not None:
+        return [model[x] for x in var_names]
+
+    extra_observeds: list = []
+    output_vars = list(model.observed_RVs)
+    if observed_data is not None:
+        for name in observed_data.data_vars:
+            if name in model and model[name] not in output_vars:
+                output_vars.append(model[name])
+                extra_observeds.append(model[name])
+    output_vars_set = set(output_vars)
+    output_vars += [
+        d
+        for d in observed_dependent_deterministics(model, extra_observeds)
+        if d not in output_vars_set
+    ]
+    return output_vars
+
+
+def _forward_from_posterior(
+    posterior: xr.Dataset,
+    model,
+    *,
+    predictions: bool,
+    dt: DataTree | None = None,
+    var_names: Sequence[str] | None = None,
+    random_seed: int | None = None,
+) -> dict[str, np.ndarray]:
+    """Forward-sample observed outputs for each ``(draw, chain)`` posterior point."""
+    model = modelcontext(model)
+    if posterior.sizes.get("draw", 0) == 0 or posterior.sizes.get("chain", 0) == 0:
+        return {}
+
+    point_list, stacked_dims = dataset_to_point_list(posterior, _SAMPLE_DIMS)
+    if not point_list:
+        return {}
+
+    trace_constant_data, trace_coords = _trace_constant_data_from_datatree(dt)
+    constant_data = _build_constant_data(trace_constant_data, trace_coords, model)
+    vars_in_trace = get_vars_in_point_list(point_list, model)
+
+    observed_data = None if predictions else dt.get("observed_data", None) if dt is not None else None
+    if observed_data is not None:
+        observed_data = observed_data.dataset
+
+    output_vars = _resolve_forward_output_vars(
+        model, var_names=var_names, observed_data=observed_data
+    )
+    if not output_vars:
+        return {}
+
+    trace_rvs = [rv for rv in vars_in_trace if rv in set(model.basic_RVs)]
+    frozen_vars = set(trace_rvs)
+    vars_to_evaluate = list(get_default_varnames(output_vars, include_transformed=False))
+
+    if random_seed is not None:
+        (random_seed,) = _get_seeds_per_chain(random_seed, 1)
+
+    ppc_trace_t = _DefaultTrace(len(point_list))
+    if vars_to_evaluate:
+        sampler_fn, _ = compile_forward_sampling_function(
+            outputs=vars_to_evaluate,
+            vars_in_trace=vars_in_trace,
+            basic_rvs=model.basic_RVs,
+            random_seed=random_seed,
+            constant_data=constant_data,
+            volatile_vars=set(),
+            freeze_vars=frozen_vars,
+        )
+        sampler_fn = point_wrapper(sampler_fn)
+        evaluated_names = {v.name for v in vars_to_evaluate}
+        copy_from_trace_names = [var.name for var in output_vars if var.name not in evaluated_names]
+
+        for idx, param in enumerate(point_list):
+            if sampler_fn is not None:
+                values = sampler_fn(**param)
+                for k, v in zip(vars_to_evaluate, values, strict=True):
+                    ppc_trace_t.insert(k.name, v, idx)
+            for name in copy_from_trace_names:
+                ppc_trace_t.insert(name, param[name], idx)
+    else:
+        for idx, param in enumerate(point_list):
+            for var in output_vars:
+                ppc_trace_t.insert(var.name, param[var.name], idx)
+
+    ppc_trace = ppc_trace_t.trace_dict
+    for name, ary in ppc_trace.items():
+        ppc_trace[name] = ary.reshape(
+            (*[len(coord) for coord in stacked_dims.values()], *ary.shape[1:])
+        )
+    return ppc_trace
+
+
+def _merge_forward_group_into_datatree(
+    dt: DataTree,
+    forward: dict[str, np.ndarray],
+    model,
+    *,
+    predictions: bool,
+    posterior_slice: xr.Dataset,
+    coords: dict[str, Any] | None = None,
+    dims: dict[str, list[str]] | None = None,
+) -> DataTree:
+    """Attach a forward-sampling group to an existing PrO DataTree."""
+    if not forward:
+        return dt
+
+    model = modelcontext(model)
+    merged_coords = _merged_coords(model, coords)
+    merged_dims = _merged_dims(model, dims)
+    draw_coord = np.asarray(posterior_slice.coords["draw"].values, dtype=int)
+    chain_coord = np.asarray(posterior_slice.coords["chain"].values, dtype=int)
+    merged_coords["draw"] = draw_coord
+    merged_coords["chain"] = chain_coord
+
+    step_values = None
+    if "step" in posterior_slice.coords:
+        step_values = np.asarray(posterior_slice.coords["step"].values, dtype=int)
+    elif "posterior" in dt.children and "step" in dt["posterior"].dataset.coords:
+        full_step = dt["posterior"].dataset.coords["step"].values
+        full_draw = dt["posterior"].dataset.coords["draw"].values
+        step_map = dict(zip(full_draw.tolist(), full_step.tolist(), strict=True))
+        step_values = np.array([step_map[int(d)] for d in draw_coord], dtype=int)
+
+    ikwargs: dict[str, Any] = {
+        "model": model,
+        "coords": merged_coords,
+        "dims": merged_dims,
+        "sample_dims": _SAMPLE_DIMS,
+    }
+
+    if predictions:
+        idata_pp = predictions_to_inference_data(forward, **ikwargs)
+        group_name = "predictions"
+    else:
+        idata_pp = to_inference_data(posterior_predictive=forward, **ikwargs)
+        group_name = "posterior_predictive"
+
+    dt.update(idata_pp)
+
+    _attach_pro_coords(
+        dt,
+        draw_coord=draw_coord,
+        step_coord=step_values,
+        groups=[group_name],
+    )
+    return dt
+
+
+def _spawn_forward_seed(random_seed: int | None) -> int | None:
+    """Derive an independent seed for forward sampling."""
+    if random_seed is None:
+        return None
+    child = np.random.SeedSequence(random_seed).spawn(1)[0]
+    return int(child.generate_state(1, dtype=np.uint64)[0])
 
 
 def _pro_to_datatree(
@@ -301,17 +566,24 @@ def _pro_to_datatree(
         data["observed_data"] = _extract_observed_data(model)
 
     log_likelihood: dict[str, np.ndarray] = {}
+    mixture_log_predictive: dict[str, np.ndarray] = {}
     if include_log_likelihood and model.observed_RVs and n_retained > 0:
         log_likelihood = _compute_log_likelihood(particles, model, mapper)
         if log_likelihood:
             data["log_likelihood"] = log_likelihood
+            mixture_log_predictive = _compute_mixture_log_predictive(log_likelihood)
 
     if include_sample_stats and n_retained > 0:
         data["sample_stats"] = _compute_sample_stats(
-            particles, posterior, log_likelihood, learning_rate
+            particles,
+            posterior,
+            log_likelihood,
+            learning_rate,
+            mixture_log_predictive=mixture_log_predictive or None,
         )
 
     pymc_attrs = make_attrs(inference_library=pymc, sample_dims=_SAMPLE_DIMS)
+    mixture_attrs = make_attrs(inference_library=pymc, sample_dims=_MIXTURE_SAMPLE_DIMS)
     group_attrs: dict[str, dict[str, Any]] = {
         "posterior": dict(pymc_attrs),
     }
@@ -331,4 +603,18 @@ def _pro_to_datatree(
 
     dt = from_dict(data, **kwargs)
     _attach_pro_coords(dt, draw_coord=draw_coord, step_coord=step_coord)
+    if mixture_log_predictive:
+        mixture_ds = _mixture_log_predictive_to_dataset(
+            mixture_log_predictive,
+            coords=merged_coords,
+            dims=merged_dims,
+            attrs=dict(mixture_attrs),
+        )
+        dt["mixture_log_predictive"] = DataTree(name="mixture_log_predictive", dataset=mixture_ds)
+        _attach_pro_coords(
+            dt,
+            draw_coord=draw_coord,
+            step_coord=step_coord,
+            groups=["mixture_log_predictive"],
+        )
     return dt

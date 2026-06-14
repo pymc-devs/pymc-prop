@@ -6,6 +6,8 @@ from pymc.exceptions import SamplingError
 from pymc_prop.points import make_point_mapper
 from pymc_prop.particles import _init_prior, initialize_particles
 from pymc_prop.sample import sample_pro
+from pymc_prop.sampler import run_sampler
+from pymc_prop.scoring import LogScore
 
 
 def test_sample_pro_runs_gaussian():
@@ -95,3 +97,24 @@ def test_init_prior_check_start_vals_on_exhaustion(monkeypatch):
         )
 
     assert len(calls) == 1
+
+
+def test_run_sampler_rejects_single_particle():
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(5))
+
+    mapper = make_point_mapper(model)
+
+    with pytest.raises(ValueError, match="n_particles must be at least 2"):
+        run_sampler(
+            model=model,
+            mapper=mapper,
+            scoring_rule=LogScore(),
+            n_particles=1,
+            n_steps=4,
+            tune=0,
+            step_size=1e-3,
+            learning_rate=1.0,
+            random_seed=0,
+        )

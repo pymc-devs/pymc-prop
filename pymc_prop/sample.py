@@ -2,15 +2,114 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
+import numpy as np
+import pymc as pm
 from pymc.model import modelcontext
 from xarray import DataTree
 
-from pymc_prop.arviz import _pro_to_datatree
+from pymc_prop.arviz import (
+    _forward_from_posterior,
+    _merge_forward_group_into_datatree,
+    _pro_to_datatree,
+    _select_posterior_draws,
+    _spawn_forward_seed,
+)
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore, ScoringRule
+
+
+def sample_posterior_predictive_pro(
+    dt: DataTree,
+    model=None,
+    *,
+    predictions: bool = False,
+    data: dict[str, Any] | None = None,
+    coords: dict[str, Any] | None = None,
+    draw: int | slice | Sequence[int] = -1,
+    var_names: Sequence[str] | None = None,
+    random_seed: int | None = None,
+    extend_datatree: bool = True,
+) -> DataTree:
+    """PrO-native posterior predictive / out-of-sample forward sampling.
+
+    Mirrors :func:`pymc.sample_posterior_predictive` with
+    ``sample_dims=["draw", "chain"]`` (retained snapshot, particle index).
+    Do not use :func:`pymc.sample_posterior_predictive` on PrO output without
+    this handling — default PyMC ``sample_dims`` mis-pairs multi-draw traces.
+
+    Parameters
+    ----------
+    dt
+        PrO :class:`~xarray.DataTree` from :func:`sample_pro`.
+    predictions
+        When ``False`` (default), populate ``posterior_predictive`` for
+        in-sample PPC. When ``True``, populate ``predictions`` for OOS.
+    data, coords
+        Required when ``predictions=True``; forwarded to :func:`pymc.set_data`.
+        PrO applies and restores ``pm.Data`` when ``data`` is passed (PyMC's
+        :func:`pymc.sample_posterior_predictive` leaves ``set_data`` to the caller).
+    draw
+        Retained snapshot(s) from ``dt.posterior`` (default final cloud ``-1``).
+    extend_datatree
+        When ``True``, merge the forward group into ``dt`` and return it.
+    """
+    model = modelcontext(model)
+    if "posterior" not in dt.children:
+        raise ValueError("DataTree must contain a posterior group from sample_pro.")
+
+    if predictions and not data:
+        raise ValueError("predictions=True requires data= with pm.Data updates for OOS.")
+
+    posterior_slice = _select_posterior_draws(dt["posterior"].dataset, draw)
+
+    with model:
+        restore_data = None
+        restore_coords = None
+        if predictions and data is not None:
+            restore_data = {
+                # Preserve original shared-variable dtype for pm.set_data restore.
+                name: np.asarray(model[name].eval()).copy() for name in data
+            }
+            if coords is not None:
+                restore_coords = {
+                    k: np.asarray(model.coords[k]) for k in coords if k in model.coords
+                }
+            pm.set_data(data, coords=coords)
+        try:
+            forward = _forward_from_posterior(
+                posterior_slice,
+                model,
+                predictions=predictions,
+                dt=dt,
+                var_names=var_names,
+                random_seed=random_seed,
+            )
+            if not extend_datatree:
+                result = _merge_forward_group_into_datatree(
+                    DataTree(),
+                    forward,
+                    model,
+                    predictions=predictions,
+                    posterior_slice=posterior_slice,
+                    coords=coords,
+                )
+            else:
+                result = _merge_forward_group_into_datatree(
+                    dt,
+                    forward,
+                    model,
+                    predictions=predictions,
+                    posterior_slice=posterior_slice,
+                    coords=coords,
+                )
+        finally:
+            if restore_data is not None:
+                pm.set_data(restore_data, coords=restore_coords)
+        return result
 
 
 def sample_pro(
@@ -27,6 +126,8 @@ def sample_pro(
     include_log_likelihood: bool = True,
     include_observed_data: bool = True,
     include_sample_stats: bool = True,
+    include_posterior_predictive: bool = True,
+    posterior_predictive_draws: int | slice | Sequence[int] = -1,
     datatree_kwargs: dict[str, Any] | None = None,
 ) -> DataTree:
     """Run the PrO particle sampler on a PyMC model.
@@ -34,9 +135,16 @@ def sample_pro(
     Free RVs must be native unconstrained; reparameterize manually for now.
 
     Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
-    ``observed_data``, ``log_likelihood``, and ``sample_stats`` groups.
-    Retained steps map to ``draw``; simulation step
+    ``observed_data``, ``log_likelihood``, ``mixture_log_predictive``, and
+    ``sample_stats`` groups. Retained steps map to ``draw``; simulation step
     numbers are in the ``step`` coordinate; particles map to ``chain``.
+
+    The ``mixture_log_predictive`` group holds :math:`\\log p_{\\hat Q}(y_i)` at
+    observed data under the empirical particle mixture
+    :math:`\\hat Q = \\frac{1}{p}\\sum_j \\delta_{\\theta^{(j)}}` (no ``chain``
+    dimension). ``sample_stats.mixture_log_predictive_total`` sums those values
+    over observations. This is the log predictive PrO targets; it differs from
+    ``mean_log_score``, which averages per-particle log-score sums.
 
     Parameters
     ----------
@@ -63,6 +171,11 @@ def sample_pro(
         Control which optional DataTree groups are populated. Set
         ``include_log_likelihood=False`` to skip the post-sampling logp pass
         when only particle trajectories are needed.
+    include_posterior_predictive
+        When ``True`` (default) and the model has observed RVs, run
+        :func:`sample_posterior_predictive_pro` on the final retained cloud.
+    posterior_predictive_draws
+        ``draw`` selection forwarded to :func:`sample_posterior_predictive_pro`.
     datatree_kwargs
         Extra keyword arguments forwarded to the internal DataTree builder
         (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
@@ -70,6 +183,8 @@ def sample_pro(
 
     See Also
     --------
+    sample_posterior_predictive_pro
+        In-sample PPC and OOS predictions on a PrO DataTree.
     compile_drift_for_logscore
         Log-score WGF drift (compiled interaction + prior grad).
     LogScore
@@ -85,6 +200,12 @@ def sample_pro(
         raise ValueError("tune must be non-negative.")
     if step_size <= 0:
         raise ValueError("step_size must be positive.")
+    if learning_rate <= 0:
+        raise ValueError("learning_rate must be positive.")
+    if not model.observed_RVs:
+        raise ValueError(
+            "sample_pro requires a model with observed variables for log-score sampling."
+        )
     if isinstance(scoring_rule, str):
         if scoring_rule != "log":
             raise ValueError("Only log-score is supported in this version.")
@@ -104,7 +225,7 @@ def sample_pro(
         random_seed=random_seed,
     )
 
-    return _pro_to_datatree(
+    dt = _pro_to_datatree(
         particles,
         model=model,
         mapper=mapper,
@@ -117,3 +238,14 @@ def sample_pro(
         include_sample_stats=include_sample_stats,
         datatree_kwargs=datatree_kwargs,
     )
+
+    if include_posterior_predictive and model.observed_RVs:
+        dt = sample_posterior_predictive_pro(
+            dt,
+            model=model,
+            draw=posterior_predictive_draws,
+            extend_datatree=True,
+            random_seed=_spawn_forward_seed(random_seed),
+        )
+
+    return dt
