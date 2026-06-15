@@ -41,6 +41,11 @@ def sample_posterior_predictive_pro(
     Do not use :func:`pymc.sample_posterior_predictive` on PrO output without
     this handling — default PyMC ``sample_dims`` mis-pairs multi-draw traces.
 
+    A PrO ``draw`` is the particle cloud at a retained simulation step. This
+    function forward-samples :math:`y \\sim p(y \\mid \\theta^{(j)})` per particle,
+    so ArviZ ``plot_ppc_dist`` shows per-particle replicates. The marginal PrO
+    predictive :math:`p_{\\hat Q}(y)` pools over particles in ``mixture_log_predictive``.
+
     Parameters
     ----------
     dt
@@ -56,6 +61,12 @@ def sample_posterior_predictive_pro(
         Retained snapshot(s) from ``dt.posterior`` (default final cloud ``-1``).
     extend_datatree
         When ``True``, merge the forward group into ``dt`` and return it.
+
+    See Also
+    --------
+    sample_pro
+        Builds the PrO DataTree; ``mixture_log_predictive`` holds the marginal
+        log predictive at observed data.
     """
     model = modelcontext(model)
     if "posterior" not in dt.children:
@@ -144,7 +155,8 @@ def sample_pro(
     :math:`\\hat Q = \\frac{1}{p}\\sum_j \\delta_{\\theta^{(j)}}` (no ``chain``
     dimension). ``sample_stats.mixture_log_predictive_total`` sums those values
     over observations. This is the log predictive PrO targets; it differs from
-    ``mean_log_score``, which averages per-particle log-score sums.
+    ``mean_log_score``, which averages per-particle log-score sums. Optional
+    ``posterior_predictive`` is per-particle forward sampling only.
 
     Parameters
     ----------
@@ -184,7 +196,8 @@ def sample_pro(
     See Also
     --------
     sample_posterior_predictive_pro
-        In-sample PPC and OOS predictions on a PrO DataTree.
+        In-sample PPC and OOS forward sampling; per-particle replicates (contrast
+        with ``mixture_log_predictive``).
     compile_drift_for_logscore
         Log-score WGF drift (compiled interaction + prior grad).
     LogScore
