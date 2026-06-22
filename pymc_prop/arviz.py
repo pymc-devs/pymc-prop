@@ -191,6 +191,8 @@ def _compute_sample_stats(
     posterior: dict[str, np.ndarray],
     log_likelihood: dict[str, np.ndarray],
     learning_rate: float,
+    *,
+    fuse_stats: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     """PrO-specific diagnostics derived from retained particle clouds."""
     n_retained, n_particles = particles.shape[:2]
@@ -216,6 +218,10 @@ def _compute_sample_stats(
         se_score = np.std(per_particle, axis=1, ddof=1) / np.sqrt(n_particles)
         stats["mean_log_score"] = _broadcast_draw_stat(mean_score, n_particles)
         stats["se_log_score"] = _broadcast_draw_stat(se_score, n_particles)
+
+    if fuse_stats:
+        for name, values in fuse_stats.items():
+            stats[name] = _broadcast_draw_stat(np.asarray(values, dtype=float), n_particles)
 
     return stats
 
@@ -275,6 +281,7 @@ def _pro_to_datatree(
     include_observed_data: bool = True,
     include_sample_stats: bool = True,
     datatree_kwargs: dict[str, Any] | None = None,
+    fuse_stats: dict[str, np.ndarray] | None = None,
 ) -> DataTree:
     """Package retained PrO particles as an ArviZ DataTree.
 
@@ -308,7 +315,11 @@ def _pro_to_datatree(
 
     if include_sample_stats and n_retained > 0:
         data["sample_stats"] = _compute_sample_stats(
-            particles, posterior, log_likelihood, learning_rate
+            particles,
+            posterior,
+            log_likelihood,
+            learning_rate,
+            fuse_stats=fuse_stats,
         )
 
     pymc_attrs = make_attrs(inference_library=pymc, sample_dims=_SAMPLE_DIMS)

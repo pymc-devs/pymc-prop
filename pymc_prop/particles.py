@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -11,6 +12,8 @@ from pymc.blocking import DictToArrayBijection
 from pymc.initial_point import make_initial_point_fn
 
 from pymc_prop.points import PointMapper
+
+_FUSE_GRAD_EPS = 1e-16
 
 
 def _init_prior(
@@ -85,6 +88,97 @@ def initialize_particles(
         seeds=seeds,
         max_retries=max_retries,
     )
+
+
+@dataclass
+class FuseStepDiagnostics:
+    """Per-step FUSE schedule ingredients (Sharrock & Nemeth 2025)."""
+
+    eta: float
+    g_sq: float
+    d_sq: float
+
+
+@dataclass
+class FuseState:
+    """Mutable FUSE schedule state (Sharrock & Nemeth 2025, Sec. 5.1.1).
+
+    ``half_ref`` stores the bootstrap scaled half-step; ``grad_energy`` accumulates
+    mean squared **raw** drift (``g_s^2``); ``r_bar`` tracks the running distance
+    floor. ``learning_rate`` is not applied when accumulating ``grad_energy``.
+    """
+
+    half_ref: np.ndarray | None = None
+    r_bar: float = 0.0
+    grad_energy: float = 0.0
+    bootstrapped: bool = False
+
+
+def raw_drift(wgf_grad: np.ndarray, prior_grad: np.ndarray) -> np.ndarray:
+    """Raw interaction drift for FUSE gradient-energy accumulation.
+
+    Returns ``wgf_grad - prior_grad`` (no ``learning_rate``). Used only for
+    ``g_s^2`` in the FUSE denominator; particle motion uses :func:`scaled_drift`.
+    """
+    return wgf_grad - prior_grad
+
+
+def scaled_drift(
+    wgf_grad: np.ndarray, prior_grad: np.ndarray, learning_rate: float
+) -> np.ndarray:
+    """Deterministic drift passed to :func:`time_step` (includes ``learning_rate``)."""
+    return learning_rate * wgf_grad - prior_grad
+
+
+def fuse_grad_energy(raw: np.ndarray) -> float:
+    """Empirical gradient energy ``(1/n) Σ_i ‖raw[i]‖²`` for FUSE."""
+    return float(np.mean(np.sum(raw * raw, axis=1)))
+
+
+def fuse_distance(half_ref: np.ndarray, half_scaled: np.ndarray) -> float:
+    """Empirical half-step distance ``sqrt((1/n) Σ_i ‖half_ref[i] - half[i]‖²)``."""
+    diff = half_ref - half_scaled
+    return float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
+
+
+def fuse_step_size(
+    particles: np.ndarray,
+    wgf_grad: np.ndarray,
+    prior_grad: np.ndarray,
+    learning_rate: float,
+    state: FuseState,
+    r_eps: float,
+) -> tuple[float, FuseState, FuseStepDiagnostics]:
+    """Return ``eta_t``, updated state, and per-step FUSE diagnostics.
+
+    On the bootstrap step, ``eta_0 = r_\\varepsilon`` and ``half_ref`` is set from
+    the scaled deterministic half-step. Thereafter ``g_s^2`` uses :func:`raw_drift`
+    while half-steps and :func:`time_step` use :func:`scaled_drift`.
+
+    ``g_sq`` is the incremental gradient energy at the current cloud; ``d_sq`` is
+    the squared empirical half-step distance (``0`` on bootstrap).
+    """
+    scaled = scaled_drift(wgf_grad, prior_grad, learning_rate)
+    raw = raw_drift(wgf_grad, prior_grad)
+
+    if not state.bootstrapped:
+        eta = r_eps
+        state.half_ref = particles - eta * scaled
+        state.r_bar = r_eps
+        state.grad_energy = 0.0
+        state.bootstrapped = True
+        diag = FuseStepDiagnostics(eta=eta, g_sq=fuse_grad_energy(raw), d_sq=0.0)
+        return eta, state, diag
+
+    g_inc = fuse_grad_energy(raw)
+    state.grad_energy += g_inc
+    eta = state.r_bar / np.sqrt(state.grad_energy + _FUSE_GRAD_EPS)
+    half = particles - eta * scaled
+    assert state.half_ref is not None
+    d_next = fuse_distance(state.half_ref, half)
+    state.r_bar = max(state.r_bar, max(r_eps, d_next))
+    diag = FuseStepDiagnostics(eta=eta, g_sq=g_inc, d_sq=d_next * d_next)
+    return eta, state, diag
 
 
 def time_step(
