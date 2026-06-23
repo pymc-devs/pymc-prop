@@ -6,15 +6,15 @@ import numpy as np
 import pymc as pm
 import pytest
 
-from pymc_prop.particles import (
+from pymc_prop.fuse import (
+    FUSE_GRADIENT_ENERGY_STAT,
+    FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     FuseState,
     fuse_distance,
     fuse_grad_energy,
     fuse_step_size,
-    raw_drift,
-    scaled_drift,
-    time_step,
 )
+from pymc_prop.particles import raw_drift, scaled_drift, time_step
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sample import sample_pro
 from pymc_prop.sampler import run_sampler
@@ -113,6 +113,7 @@ def test_fuse_raw_vs_scaled_learning_rate():
     particles = rng.standard_normal((8, 2))
     wgf_grad = rng.standard_normal((8, 2))
     prior_grad = rng.standard_normal((8, 2))
+    # lr != 1 so raw and scaled differ; at lr=1 both coincide numerically.
     learning_rate = 0.5
     r_eps = 1e-5
 
@@ -186,7 +187,7 @@ def test_sample_pro_fuse_integration_smoke():
     assert dt.posterior.sizes["draw"] == n_steps
     assert dt.posterior.sizes["chain"] == 8
     assert np.all(np.isfinite(dt.posterior["mu"].values))
-    assert "fuse_g_sq" in dt.sample_stats
-    assert "fuse_d_sq" in dt.sample_stats
+    assert FUSE_GRADIENT_ENERGY_STAT in dt.sample_stats
+    assert FUSE_HALF_STEP_DISTANCE_SQ_STAT in dt.sample_stats
     assert dt.sample_stats.sizes["draw"] == n_steps
-    assert np.all(np.isfinite(dt.sample_stats["fuse_g_sq"].isel(chain=0).values))
+    assert np.all(np.isfinite(dt.sample_stats[FUSE_GRADIENT_ENERGY_STAT].isel(chain=0).values))

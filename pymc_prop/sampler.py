@@ -7,12 +7,14 @@ from typing import List
 import numpy as np
 
 from pymc_prop.compile import compile_batched_prior_grad
-from pymc_prop.particles import (
+from pymc_prop.fuse import (
+    FUSE_GRADIENT_ENERGY_STAT,
+    FUSE_HALF_STEP_DISTANCE_SQ_STAT,
+    FUSE_STEP_SIZE_STAT,
     FuseState,
     fuse_step_size,
-    initialize_particles,
-    time_step,
 )
+from pymc_prop.particles import initialize_particles, time_step
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
 
@@ -88,9 +90,9 @@ def run_sampler(
                 r_eps,
             )
             if fuse_diagnostics is not None and step >= tune:
-                fuse_diagnostics.setdefault("fuse_g_sq", []).append(diag.g_sq)
-                fuse_diagnostics.setdefault("fuse_d_sq", []).append(diag.d_sq)
-                fuse_diagnostics.setdefault("fuse_step_size", []).append(diag.eta)
+                fuse_diagnostics.setdefault(FUSE_GRADIENT_ENERGY_STAT, []).append(diag.gradient_energy)
+                fuse_diagnostics.setdefault(FUSE_HALF_STEP_DISTANCE_SQ_STAT, []).append(diag.half_step_distance_sq)
+                fuse_diagnostics.setdefault(FUSE_STEP_SIZE_STAT, []).append(diag.step_size)
         else:
             eta = step_size
 
