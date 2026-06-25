@@ -1,8 +1,13 @@
 import numpy as np
 import pymc as pm
 import pytest
+import xarray as xr
 
 from pymc_prop import sample_posterior_predictive_pro, sample_pro
+from pymc_prop.arviz import (
+    _forward_from_posterior,
+    _mixture_remix_forward_dataset,
+)
 
 
 def _gaussian_model(y=None):
@@ -27,9 +32,9 @@ def test_sample_pro_includes_posterior_predictive_by_default():
     )
 
     assert "posterior_predictive" in dt
-    assert dt.posterior_predictive.attrs["sample_dims"] == ["draw", "chain"]
-    assert dt.posterior_predictive.sizes["draw"] == 1
-    assert dt.posterior_predictive.sizes["chain"] == n_particles
+    assert dt.posterior_predictive.attrs["sample_dims"] == ["chain", "draw"]
+    assert dt.posterior_predictive.sizes["draw"] == 400
+    assert dt.posterior_predictive.sizes["chain"] == 1
     assert np.all(np.isfinite(dt.posterior_predictive["y"].values))
 
 
@@ -63,7 +68,12 @@ def test_final_draw_shape():
     )
 
     sample_posterior_predictive_pro(dt, model=model, draw=-1)
-    assert dt.posterior_predictive["y"].shape == (1, n_particles, n_obs)
+    assert dt.posterior_predictive["y"].shape == (1, 400, n_obs)
+
+    sample_posterior_predictive_pro(
+        dt, model=model, draw=-1, n_ppc_replicates=1
+    )
+    assert dt.posterior_predictive["y"].shape == (1, 1, n_obs)
 
 
 def test_thinned_draw_shape():
@@ -81,8 +91,66 @@ def test_thinned_draw_shape():
     )
 
     sample_posterior_predictive_pro(dt, model=model, draw=slice(0, None, 2))
-    assert dt.posterior_predictive.sizes["draw"] == n_steps // 2
-    assert dt.posterior_predictive.sizes["chain"] == n_particles
+    assert dt.posterior_predictive.sizes["draw"] == 400
+    assert dt.posterior_predictive.sizes["chain"] == 1
+
+
+def test_n_ppc_replicates_decoupled_from_grid():
+    model = _gaussian_model()
+    n_obs = 5
+
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=8,
+        tune=0,
+        include_posterior_predictive=False,
+        random_seed=22,
+    )
+
+    sample_posterior_predictive_pro(
+        dt, model=model, draw=-1, n_ppc_replicates=50, random_seed=23
+    )
+    assert dt.posterior_predictive["y"].shape == (1, 50, n_obs)
+
+
+def test_repeated_draw_list_still_works():
+    model = _gaussian_model()
+    n_obs = 5
+
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=8,
+        tune=0,
+        include_posterior_predictive=False,
+        random_seed=24,
+    )
+
+    sample_posterior_predictive_pro(
+        dt,
+        model=model,
+        draw=[-1] * 10,
+        n_ppc_replicates=400,
+        random_seed=25,
+    )
+    assert dt.posterior_predictive.sizes["draw"] == 400
+    assert dt.posterior_predictive["y"].shape == (1, 400, n_obs)
+
+
+def test_n_ppc_replicates_validation():
+    model = _gaussian_model()
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=4,
+        tune=0,
+        include_posterior_predictive=False,
+        random_seed=26,
+    )
+
+    with pytest.raises(ValueError, match="n_ppc_replicates must be positive"):
+        sample_posterior_predictive_pro(dt, model=model, n_ppc_replicates=0)
 
 
 def test_plot_ppc_dist_smoke():
@@ -128,7 +196,7 @@ def test_oos_predictions_linear_regression():
         )
 
     assert "predictions" in dt
-    assert dt.predictions["y"].shape == (1, 4, 3)
+    assert dt.predictions["y"].shape == (1, 400, 3)
     assert np.all(np.isfinite(dt.predictions["y"].values))
 
 
@@ -231,8 +299,102 @@ def test_pymc_default_sample_dims_differs_on_multi_draw():
         )
 
     assert wrong.posterior_predictive["y"].shape == (n_particles, n_steps, 5)
-    assert native.posterior_predictive["y"].shape == (n_steps, n_particles, 5)
-    assert native.posterior_predictive.attrs["sample_dims"] == ["draw", "chain"]
+    assert native.posterior_predictive["y"].shape == (1, 400, 5)
+    assert native.posterior_predictive.attrs["sample_dims"] == ["chain", "draw"]
+
+
+def test_forward_grid_shape_before_remix():
+    model = _gaussian_model()
+    n_particles = 4
+    n_steps = 6
+    n_obs = 5
+
+    dt = sample_pro(
+        model=model,
+        n_particles=n_particles,
+        n_steps=n_steps,
+        tune=0,
+        include_posterior_predictive=False,
+        random_seed=13,
+    )
+
+    with model:
+        forward = _forward_from_posterior(
+            dt["posterior"].dataset,
+            model,
+            predictions=False,
+            dt=dt,
+            random_seed=14,
+        )
+
+    assert forward["y"].shape == (n_steps, n_particles, n_obs)
+
+
+def test_mixture_remix_matches_manual_isel():
+    n_draw, n_chain, n_obs = 3, 4, 2
+    grid_values = np.arange(n_draw * n_chain * n_obs, dtype=float).reshape(
+        n_draw, n_chain, n_obs
+    )
+    grid = xr.Dataset(
+        {"y": (("draw", "chain", "y_dim_0"), grid_values)},
+        coords={
+            "draw": np.arange(n_draw),
+            "chain": np.arange(n_chain),
+            "y_dim_0": np.arange(n_obs),
+        },
+    )
+
+    seed = 221
+    remixed = _mixture_remix_forward_dataset(
+        grid, n_ppc_replicates=n_draw, random_seed=seed
+    )
+
+    rng = np.random.default_rng(seed)
+    target_shape = (n_draw, n_obs)
+    random_chains = rng.integers(0, n_chain, size=target_shape)
+    random_draws = rng.choice(n_draw, size=target_shape, replace=True)
+    chain_da = xr.DataArray(random_chains, dims=["draw", "y_dim_0"])
+    draw_da = xr.DataArray(random_draws, dims=["draw", "y_dim_0"])
+    expected = grid["y"].isel(chain=chain_da, draw=draw_da).values[np.newaxis, ...]
+
+    np.testing.assert_array_equal(remixed["y"].values, expected)
+    assert remixed.attrs["sample_dims"] == ["chain", "draw"]
+    assert remixed.sizes["chain"] == 1
+    assert remixed.sizes["draw"] == n_draw
+
+
+def test_remix_seed_reproducibility():
+    model = _gaussian_model()
+
+    dt_a = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=6,
+        tune=0,
+        include_posterior_predictive=False,
+        random_seed=15,
+    )
+    dt_b = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=6,
+        tune=0,
+        include_posterior_predictive=False,
+        random_seed=15,
+    )
+
+    sample_posterior_predictive_pro(dt_a, model=model, draw=-1, random_seed=16)
+    sample_posterior_predictive_pro(dt_b, model=model, draw=-1, random_seed=16)
+    np.testing.assert_array_equal(
+        dt_a.posterior_predictive["y"].values,
+        dt_b.posterior_predictive["y"].values,
+    )
+
+    sample_posterior_predictive_pro(dt_a, model=model, draw=-1, random_seed=17)
+    assert not np.allclose(
+        dt_a.posterior_predictive["y"].values,
+        dt_b.posterior_predictive["y"].values,
+    )
 
 
 def test_predictions_true_requires_data():

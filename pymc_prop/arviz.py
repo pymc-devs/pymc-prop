@@ -13,7 +13,6 @@ from scipy.special import logsumexp
 from arviz_base import from_dict
 from arviz_base.base import dict_to_dataset, make_attrs
 from pymc.backends.arviz import _DefaultTrace, dataset_to_point_list
-from pymc.backends.arviz import predictions_to_inference_data, to_inference_data
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.model import modelcontext
 from pymc.sampling.forward import (
@@ -31,7 +30,9 @@ from pymc_prop.compile import compile_batched_observed_logp_score
 from pymc_prop.points import PointMapper, flat_to_value_vars
 
 # draw = retained index; chain = ensemble particles; step = simulation step
-_SAMPLE_DIMS = ["draw", "chain"]
+_PRO_SAMPLE_DIMS = ["draw", "chain"]
+_PPC_SAMPLE_DIMS = ["chain", "draw"]
+_SAMPLE_DIMS = _PRO_SAMPLE_DIMS
 _MIXTURE_SAMPLE_DIMS = ["draw"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
 _VECTORIZE_FALLBACK_ERRORS = (TypeError, ValueError, AttributeError, NotImplementedError)
@@ -463,59 +464,94 @@ def _forward_from_posterior(
     return ppc_trace
 
 
-def _merge_forward_group_into_datatree(
-    dt: DataTree,
+def _forward_dict_to_grid_dataset(
     forward: dict[str, np.ndarray],
     model,
-    *,
-    predictions: bool,
     posterior_slice: xr.Dataset,
+    *,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
-) -> DataTree:
-    """Attach a forward-sampling group to an existing PrO DataTree."""
-    if not forward:
-        return dt
-
+) -> xr.Dataset:
+    """Wrap a per-particle forward grid as an xarray Dataset."""
     model = modelcontext(model)
     merged_coords = _merged_coords(model, coords)
     merged_dims = _merged_dims(model, dims)
-    draw_coord = np.asarray(posterior_slice.coords["draw"].values, dtype=int)
-    chain_coord = np.asarray(posterior_slice.coords["chain"].values, dtype=int)
-    merged_coords["draw"] = draw_coord
-    merged_coords["chain"] = chain_coord
-
-    step_values = None
-    if "step" in posterior_slice.coords:
-        step_values = np.asarray(posterior_slice.coords["step"].values, dtype=int)
-    elif "posterior" in dt.children and "step" in dt["posterior"].dataset.coords:
-        full_step = dt["posterior"].dataset.coords["step"].values
-        full_draw = dt["posterior"].dataset.coords["draw"].values
-        step_map = dict(zip(full_draw.tolist(), full_step.tolist(), strict=True))
-        step_values = np.array([step_map[int(d)] for d in draw_coord], dtype=int)
-
-    ikwargs: dict[str, Any] = {
-        "model": model,
-        "coords": merged_coords,
-        "dims": merged_dims,
-        "sample_dims": _SAMPLE_DIMS,
-    }
-
-    if predictions:
-        idata_pp = predictions_to_inference_data(forward, **ikwargs)
-        group_name = "predictions"
-    else:
-        idata_pp = to_inference_data(posterior_predictive=forward, **ikwargs)
-        group_name = "posterior_predictive"
-
-    dt.update(idata_pp)
-
-    _attach_pro_coords(
-        dt,
-        draw_coord=draw_coord,
-        step_coord=step_values,
-        groups=[group_name],
+    merged_coords["draw"] = np.asarray(posterior_slice.coords["draw"].values, dtype=int)
+    merged_coords["chain"] = np.asarray(posterior_slice.coords["chain"].values, dtype=int)
+    return dict_to_dataset(
+        forward,
+        coords=merged_coords,
+        dims=merged_dims,
+        sample_dims=_PRO_SAMPLE_DIMS,
+        skip_event_dims=True,
+        inference_library=pymc,
     )
+
+
+def _mixture_remix_forward_dataset(
+    grid: xr.Dataset,
+    *,
+    n_ppc_replicates: int,
+    random_seed: int | None = None,
+) -> xr.Dataset:
+    """Remix a per-particle forward grid into mixture PPC draws for ArviZ.
+
+    Each output replicate independently resamples particle ``chain`` and grid
+    ``draw`` per observation element (marginal mixture PPC, not a joint draw
+    from a single :math:`\\theta`).
+    """
+    if n_ppc_replicates <= 0:
+        raise ValueError("n_ppc_replicates must be positive.")
+    if grid.sizes.get("draw", 0) == 0 or grid.sizes.get("chain", 0) == 0:
+        return grid
+
+    n_draw = grid.sizes["draw"]
+    n_chain = grid.sizes["chain"]
+    obs_dims = [d for d in grid.dims if d not in _PRO_SAMPLE_DIMS]
+    obs_shape = tuple(grid.sizes[d] for d in obs_dims)
+    target_shape = (n_ppc_replicates,) + obs_shape
+
+    rng = np.random.default_rng(random_seed)
+    random_chains = rng.integers(0, n_chain, size=target_shape)
+    random_draws = rng.choice(n_draw, size=target_shape, replace=True)
+
+    indexing_dims = ["draw", *obs_dims]
+    chain_da = xr.DataArray(random_chains, dims=indexing_dims)
+    draw_da = xr.DataArray(random_draws, dims=indexing_dims)
+
+    final_dims = tuple(_PPC_SAMPLE_DIMS) + tuple(obs_dims)
+    remixed_vars: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
+    for name in grid.data_vars:
+        y_mixed = grid[name].isel(chain=chain_da, draw=draw_da)
+        remixed_vars[name] = (final_dims, y_mixed.values[np.newaxis, ...])
+
+    remixed_coords: dict[str, Any] = {
+        "chain": np.array([0], dtype=int),
+        "draw": np.arange(n_ppc_replicates, dtype=int),
+    }
+    for dim in obs_dims:
+        remixed_coords[dim] = (
+            grid.coords[dim].values
+            if dim in grid.coords
+            else np.arange(grid.sizes[dim], dtype=int)
+        )
+
+    attrs = make_attrs(inference_library=pymc, sample_dims=_PPC_SAMPLE_DIMS)
+    return xr.Dataset(remixed_vars, coords=remixed_coords, attrs=attrs)
+
+
+def _merge_remixed_forward_into_datatree(
+    dt: DataTree,
+    remixed: xr.Dataset,
+    *,
+    predictions: bool,
+) -> DataTree:
+    """Attach mixture-remixed forward draws to a PrO DataTree."""
+    if not remixed.data_vars:
+        return dt
+
+    group_name = "predictions" if predictions else "posterior_predictive"
+    dt[group_name] = DataTree(name=group_name, dataset=remixed)
     return dt
 
 
@@ -525,6 +561,19 @@ def _spawn_forward_seed(random_seed: int | None) -> int | None:
         return None
     child = np.random.SeedSequence(random_seed).spawn(1)[0]
     return int(child.generate_state(1, dtype=np.uint64)[0])
+
+
+def _spawn_forward_and_remix_seeds(
+    random_seed: int | None,
+) -> tuple[int | None, int | None]:
+    """Derive independent seeds for the forward grid and mixture remix."""
+    if random_seed is None:
+        return None, None
+    children = np.random.SeedSequence(random_seed).spawn(2)
+    return (
+        int(children[0].generate_state(1, dtype=np.uint64)[0]),
+        int(children[1].generate_state(1, dtype=np.uint64)[0]),
+    )
 
 
 def _pro_to_datatree(

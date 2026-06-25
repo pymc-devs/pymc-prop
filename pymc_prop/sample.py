@@ -11,10 +11,13 @@ from pymc.model import modelcontext
 from xarray import DataTree
 
 from pymc_prop.arviz import (
+    _forward_dict_to_grid_dataset,
     _forward_from_posterior,
-    _merge_forward_group_into_datatree,
+    _merge_remixed_forward_into_datatree,
+    _mixture_remix_forward_dataset,
     _pro_to_datatree,
     _select_posterior_draws,
+    _spawn_forward_and_remix_seeds,
     _spawn_forward_seed,
 )
 from pymc_prop.points import make_point_mapper
@@ -30,21 +33,25 @@ def sample_posterior_predictive_pro(
     data: dict[str, Any] | None = None,
     coords: dict[str, Any] | None = None,
     draw: int | slice | Sequence[int] = -1,
+    n_ppc_replicates: int = 400,
     var_names: Sequence[str] | None = None,
     random_seed: int | None = None,
     extend_datatree: bool = True,
 ) -> DataTree:
     """PrO-native posterior predictive / out-of-sample forward sampling.
 
-    Mirrors :func:`pymc.sample_posterior_predictive` with
-    ``sample_dims=["draw", "chain"]`` (retained snapshot, particle index).
-    Do not use :func:`pymc.sample_posterior_predictive` on PrO output without
-    this handling — default PyMC ``sample_dims`` mis-pairs multi-draw traces.
+    Builds a per-particle forward grid from ``dt.posterior`` with
+    ``sample_dims=["draw", "chain"]`` (retained snapshot, particle index), then
+    remixes it into mixture PPC draws. Do not use
+    :func:`pymc.sample_posterior_predictive` on PrO output without this
+    handling — default PyMC ``sample_dims`` mis-pairs multi-draw traces.
 
-    A PrO ``draw`` is the particle cloud at a retained simulation step. This
-    function forward-samples :math:`y \\sim p(y \\mid \\theta^{(j)})` per particle,
-    so ArviZ ``plot_ppc_dist`` shows per-particle replicates. The marginal PrO
-    predictive :math:`p_{\\hat Q}(y)` pools over particles in ``mixture_log_predictive``.
+    The exported ``posterior_predictive`` (or ``predictions``) group uses ArviZ
+    MCMC layout: ``sample_dims=["chain", "draw"]`` with a dummy ``chain=0``.
+    Each replicate independently resamples particle ``chain`` and grid ``draw``
+    indices per observation element (marginal mixture PPC, not a joint draw from
+    one :math:`\\theta`). The analytic log marginal at observed data is in
+    ``mixture_log_predictive``.
 
     Parameters
     ----------
@@ -58,7 +65,12 @@ def sample_posterior_predictive_pro(
         PrO applies and restores ``pm.Data`` when ``data`` is passed (PyMC's
         :func:`pymc.sample_posterior_predictive` leaves ``set_data`` to the caller).
     draw
-        Retained snapshot(s) from ``dt.posterior`` (default final cloud ``-1``).
+        Retained snapshot(s) from ``dt.posterior`` for the forward grid (default
+        final cloud ``-1``).
+    n_ppc_replicates
+        Number of mixture PPC rows in the exported group (default ``400``).
+        Exported ``draw`` labels are ``0 … n_ppc_replicates-1``, not posterior
+        snapshot indices.
     extend_datatree
         When ``True``, merge the forward group into ``dt`` and return it.
 
@@ -74,6 +86,9 @@ def sample_posterior_predictive_pro(
 
     if predictions and not data:
         raise ValueError("predictions=True requires data= with pm.Data updates for OOS.")
+
+    if n_ppc_replicates <= 0:
+        raise ValueError("n_ppc_replicates must be positive.")
 
     posterior_slice = _select_posterior_draws(dt["posterior"].dataset, draw)
 
@@ -91,32 +106,32 @@ def sample_posterior_predictive_pro(
                 }
             pm.set_data(data, coords=coords)
         try:
+            forward_seed, remix_seed = _spawn_forward_and_remix_seeds(random_seed)
             forward = _forward_from_posterior(
                 posterior_slice,
                 model,
                 predictions=predictions,
                 dt=dt,
                 var_names=var_names,
-                random_seed=random_seed,
+                random_seed=forward_seed,
             )
-            if not extend_datatree:
-                result = _merge_forward_group_into_datatree(
-                    DataTree(),
-                    forward,
-                    model,
-                    predictions=predictions,
-                    posterior_slice=posterior_slice,
-                    coords=coords,
-                )
-            else:
-                result = _merge_forward_group_into_datatree(
-                    dt,
-                    forward,
-                    model,
-                    predictions=predictions,
-                    posterior_slice=posterior_slice,
-                    coords=coords,
-                )
+            grid = _forward_dict_to_grid_dataset(
+                forward,
+                model,
+                posterior_slice,
+                coords=coords,
+            )
+            remixed = _mixture_remix_forward_dataset(
+                grid,
+                n_ppc_replicates=n_ppc_replicates,
+                random_seed=remix_seed,
+            )
+            target = DataTree() if not extend_datatree else dt
+            result = _merge_remixed_forward_into_datatree(
+                target,
+                remixed,
+                predictions=predictions,
+            )
         finally:
             if restore_data is not None:
                 pm.set_data(restore_data, coords=restore_coords)
@@ -139,6 +154,7 @@ def sample_pro(
     include_sample_stats: bool = True,
     include_posterior_predictive: bool = True,
     posterior_predictive_draws: int | slice | Sequence[int] = -1,
+    posterior_predictive_n_replicates: int = 400,
     datatree_kwargs: dict[str, Any] | None = None,
 ) -> DataTree:
     """Run the PrO particle sampler on a PyMC model.
@@ -156,7 +172,8 @@ def sample_pro(
     dimension). ``sample_stats.mixture_log_predictive_total`` sums those values
     over observations. This is the log predictive PrO targets; it differs from
     ``mean_log_score``, which averages per-particle log-score sums. Optional
-    ``posterior_predictive`` is per-particle forward sampling only.
+    ``posterior_predictive`` holds mixture PPC draws (see
+    :func:`sample_posterior_predictive_pro`).
 
     Parameters
     ----------
@@ -187,7 +204,11 @@ def sample_pro(
         When ``True`` (default) and the model has observed RVs, run
         :func:`sample_posterior_predictive_pro` on the final retained cloud.
     posterior_predictive_draws
-        ``draw`` selection forwarded to :func:`sample_posterior_predictive_pro`.
+        ``draw`` selection forwarded to :func:`sample_posterior_predictive_pro`
+        (which posterior snapshot(s) feed the forward grid).
+    posterior_predictive_n_replicates
+        Mixture PPC replicate count forwarded as ``n_ppc_replicates`` (default
+        ``400``).
     datatree_kwargs
         Extra keyword arguments forwarded to the internal DataTree builder
         (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
@@ -196,8 +217,8 @@ def sample_pro(
     See Also
     --------
     sample_posterior_predictive_pro
-        In-sample PPC and OOS forward sampling; per-particle replicates (contrast
-        with ``mixture_log_predictive``).
+        In-sample mixture PPC and OOS forward sampling (contrast with
+        ``mixture_log_predictive``).
     compile_drift_for_logscore
         Log-score WGF drift (compiled interaction + prior grad).
     LogScore
@@ -257,6 +278,7 @@ def sample_pro(
             dt,
             model=model,
             draw=posterior_predictive_draws,
+            n_ppc_replicates=posterior_predictive_n_replicates,
             extend_datatree=True,
             random_seed=_spawn_forward_seed(random_seed),
         )
