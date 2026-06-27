@@ -29,9 +29,7 @@ from xarray import DataTree
 from pymc_prop.compile import compile_batched_observed_logp_score
 from pymc_prop.points import PointMapper, flat_to_value_vars
 
-# draw = retained index; chain = ensemble particles; step = simulation step
 _PRO_SAMPLE_DIMS = ["draw", "chain"]
-_PPC_SAMPLE_DIMS = ["chain", "draw"]
 _SAMPLE_DIMS = _PRO_SAMPLE_DIMS
 _MIXTURE_SAMPLE_DIMS = ["draw"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
@@ -323,20 +321,6 @@ def _attach_pro_coords(
         dt[name] = ds
 
 
-def _select_posterior_draws(posterior: xr.Dataset, draw: int | slice | Sequence[int]) -> xr.Dataset:
-    """Select retained simulation snapshots from a PrO ``posterior`` group."""
-    if "draw" not in posterior.dims:
-        raise ValueError("posterior must have a draw dimension.")
-
-    n_draw = int(posterior.sizes["draw"])
-    if isinstance(draw, int):
-        idx = draw if draw >= 0 else n_draw + draw
-        if idx < 0 or idx >= n_draw:
-            raise ValueError(f"draw index {draw!r} out of range for size {n_draw}.")
-        return posterior.isel(draw=[idx])
-    return posterior.isel(draw=draw)
-
-
 def _trace_constant_data_from_datatree(dt: DataTree | None) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     """Recover trace-time constant data and coords from a PrO DataTree."""
     trace_constant_data: dict[str, np.ndarray] = {}
@@ -467,7 +451,7 @@ def _forward_from_posterior(
 def _forward_dict_to_grid_dataset(
     forward: dict[str, np.ndarray],
     model,
-    posterior_slice: xr.Dataset,
+    posterior: xr.Dataset,
     *,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
@@ -476,8 +460,8 @@ def _forward_dict_to_grid_dataset(
     model = modelcontext(model)
     merged_coords = _merged_coords(model, coords)
     merged_dims = _merged_dims(model, dims)
-    merged_coords["draw"] = np.asarray(posterior_slice.coords["draw"].values, dtype=int)
-    merged_coords["chain"] = np.asarray(posterior_slice.coords["chain"].values, dtype=int)
+    merged_coords["draw"] = np.asarray(posterior.coords["draw"].values, dtype=int)
+    merged_coords["chain"] = np.asarray(posterior.coords["chain"].values, dtype=int)
     return dict_to_dataset(
         forward,
         coords=merged_coords,
@@ -491,43 +475,40 @@ def _forward_dict_to_grid_dataset(
 def _mixture_remix_forward_dataset(
     grid: xr.Dataset,
     *,
-    n_ppc_replicates: int,
     random_seed: int | None = None,
 ) -> xr.Dataset:
-    """Remix a per-particle forward grid into mixture PPC draws for ArviZ.
+    """Remix a per-particle forward grid into draw-aligned mixture PPC draws.
 
-    Each output replicate independently resamples particle ``chain`` and grid
-    ``draw`` per observation element (marginal mixture PPC, not a joint draw
-    from a single :math:`\\theta`).
+    For each retained draw index *d*, independently resample particle ``chain``
+    per observation element from ``grid.isel(draw=d)`` -- a marginal mixture at
+    each :math:`Q_t`. Output shape is ``(draw, *obs)`` with ``sample_dims=["draw"]`` 
+    and no ``chain`` dimension.
     """
-    if n_ppc_replicates <= 0:
-        raise ValueError("n_ppc_replicates must be positive.")
     if grid.sizes.get("draw", 0) == 0 or grid.sizes.get("chain", 0) == 0:
         return grid
 
     n_draw = grid.sizes["draw"]
     n_chain = grid.sizes["chain"]
     obs_dims = [d for d in grid.dims if d not in _PRO_SAMPLE_DIMS]
-    obs_shape = tuple(grid.sizes[d] for d in obs_dims)
-    target_shape = (n_ppc_replicates,) + obs_shape
+    target_shape = (n_draw,) + tuple(grid.sizes[d] for d in obs_dims)
 
     rng = np.random.default_rng(random_seed)
     random_chains = rng.integers(0, n_chain, size=target_shape)
-    random_draws = rng.choice(n_draw, size=target_shape, replace=True)
-
     indexing_dims = ["draw", *obs_dims]
     chain_da = xr.DataArray(random_chains, dims=indexing_dims)
-    draw_da = xr.DataArray(random_draws, dims=indexing_dims)
+    draw_da = xr.DataArray(
+        np.broadcast_to(np.arange(n_draw, dtype=int).reshape((-1,) + (1,) * len(obs_dims)), target_shape),
+        dims=indexing_dims,
+    )
 
-    final_dims = tuple(_PPC_SAMPLE_DIMS) + tuple(obs_dims)
+    final_dims = ("draw", *obs_dims)
     remixed_vars: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
     for name in grid.data_vars:
         y_mixed = grid[name].isel(chain=chain_da, draw=draw_da)
-        remixed_vars[name] = (final_dims, y_mixed.values[np.newaxis, ...])
+        remixed_vars[name] = (final_dims, y_mixed.values)
 
     remixed_coords: dict[str, Any] = {
-        "chain": np.array([0], dtype=int),
-        "draw": np.arange(n_ppc_replicates, dtype=int),
+        "draw": np.asarray(grid.coords["draw"].values, dtype=int),
     }
     for dim in obs_dims:
         remixed_coords[dim] = (
@@ -536,7 +517,7 @@ def _mixture_remix_forward_dataset(
             else np.arange(grid.sizes[dim], dtype=int)
         )
 
-    attrs = make_attrs(inference_library=pymc, sample_dims=_PPC_SAMPLE_DIMS)
+    attrs = make_attrs(inference_library=pymc, sample_dims=_MIXTURE_SAMPLE_DIMS)
     return xr.Dataset(remixed_vars, coords=remixed_coords, attrs=attrs)
 
 
@@ -545,10 +526,19 @@ def _merge_remixed_forward_into_datatree(
     remixed: xr.Dataset,
     *,
     predictions: bool,
+    posterior: xr.Dataset | None = None,
 ) -> DataTree:
     """Attach mixture-remixed forward draws to a PrO DataTree."""
     if not remixed.data_vars:
         return dt
+
+    if posterior is None and "posterior" in dt.children:
+        posterior = dt["posterior"].dataset
+
+    if posterior is not None and "draw" in posterior.coords:
+        remixed = remixed.assign_coords(draw=posterior.coords["draw"])
+        if "step" in posterior.coords:
+            remixed = remixed.assign_coords(step=("draw", posterior.coords["step"].values))
 
     group_name = "predictions" if predictions else "posterior_predictive"
     dt[group_name] = DataTree(name=group_name, dataset=remixed)

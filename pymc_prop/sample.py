@@ -16,7 +16,6 @@ from pymc_prop.arviz import (
     _merge_remixed_forward_into_datatree,
     _mixture_remix_forward_dataset,
     _pro_to_datatree,
-    _select_posterior_draws,
     _spawn_forward_and_remix_seeds,
     _spawn_forward_seed,
 )
@@ -32,26 +31,24 @@ def sample_posterior_predictive_pro(
     predictions: bool = False,
     data: dict[str, Any] | None = None,
     coords: dict[str, Any] | None = None,
-    draw: int | slice | Sequence[int] = -1,
-    n_ppc_replicates: int = 400,
     var_names: Sequence[str] | None = None,
     random_seed: int | None = None,
-    extend_datatree: bool = True,
+    extend_inferencedata: bool = True,
 ) -> DataTree:
     """PrO-native posterior predictive / out-of-sample forward sampling.
 
-    Builds a per-particle forward grid from ``dt.posterior`` with
-    ``sample_dims=["draw", "chain"]`` (retained snapshot, particle index), then
-    remixes it into mixture PPC draws. Do not use
+    Builds a per-particle forward grid from the full retained ``dt.posterior``
+    cloud with ``sample_dims=["draw", "chain"]``, then remixes it into
+    draw-aligned mixture PPC draws. Do not use
     :func:`pymc.sample_posterior_predictive` on PrO output without this
     handling — default PyMC ``sample_dims`` mis-pairs multi-draw traces.
 
-    The exported ``posterior_predictive`` (or ``predictions``) group uses ArviZ
-    MCMC layout: ``sample_dims=["chain", "draw"]`` with a dummy ``chain=0``.
-    Each replicate independently resamples particle ``chain`` and grid ``draw``
-    indices per observation element (marginal mixture PPC, not a joint draw from
-    one :math:`\\theta`). The analytic log marginal at observed data is in
-    ``mixture_log_predictive``.
+    The exported ``posterior_predictive`` (or ``predictions``) group has shape
+    ``(draw, *obs)`` with ``sample_dims=["draw"]``. Each retained index
+    independently resamples particle ``chain`` per observation element at that
+    snapshot (marginal mixture at :math:`Q_t`, not a joint draw from one
+    :math:`\\theta`). ``draw`` and ``step`` align with ``posterior``. The
+    analytic log marginal at observed data is in ``mixture_log_predictive``.
 
     Parameters
     ----------
@@ -64,14 +61,7 @@ def sample_posterior_predictive_pro(
         Required when ``predictions=True``; forwarded to :func:`pymc.set_data`.
         PrO applies and restores ``pm.Data`` when ``data`` is passed (PyMC's
         :func:`pymc.sample_posterior_predictive` leaves ``set_data`` to the caller).
-    draw
-        Retained snapshot(s) from ``dt.posterior`` for the forward grid (default
-        final cloud ``-1``).
-    n_ppc_replicates
-        Number of mixture PPC rows in the exported group (default ``400``).
-        Exported ``draw`` labels are ``0 … n_ppc_replicates-1``, not posterior
-        snapshot indices.
-    extend_datatree
+    extend_inferencedata
         When ``True``, merge the forward group into ``dt`` and return it.
 
     See Also
@@ -87,10 +77,7 @@ def sample_posterior_predictive_pro(
     if predictions and not data:
         raise ValueError("predictions=True requires data= with pm.Data updates for OOS.")
 
-    if n_ppc_replicates <= 0:
-        raise ValueError("n_ppc_replicates must be positive.")
-
-    posterior_slice = _select_posterior_draws(dt["posterior"].dataset, draw)
+    posterior = dt["posterior"].dataset
 
     with model:
         restore_data = None
@@ -108,7 +95,7 @@ def sample_posterior_predictive_pro(
         try:
             forward_seed, remix_seed = _spawn_forward_and_remix_seeds(random_seed)
             forward = _forward_from_posterior(
-                posterior_slice,
+                posterior,
                 model,
                 predictions=predictions,
                 dt=dt,
@@ -118,19 +105,19 @@ def sample_posterior_predictive_pro(
             grid = _forward_dict_to_grid_dataset(
                 forward,
                 model,
-                posterior_slice,
+                posterior,
                 coords=coords,
             )
             remixed = _mixture_remix_forward_dataset(
                 grid,
-                n_ppc_replicates=n_ppc_replicates,
                 random_seed=remix_seed,
             )
-            target = DataTree() if not extend_datatree else dt
+            target = DataTree() if not extend_inferencedata else dt
             result = _merge_remixed_forward_into_datatree(
                 target,
                 remixed,
                 predictions=predictions,
+                posterior=posterior,
             )
         finally:
             if restore_data is not None:
@@ -153,8 +140,6 @@ def sample_pro(
     include_observed_data: bool = True,
     include_sample_stats: bool = True,
     include_posterior_predictive: bool = True,
-    posterior_predictive_draws: int | slice | Sequence[int] = -1,
-    posterior_predictive_n_replicates: int = 400,
     datatree_kwargs: dict[str, Any] | None = None,
 ) -> DataTree:
     """Run the PrO particle sampler on a PyMC model.
@@ -202,13 +187,7 @@ def sample_pro(
         when only particle trajectories are needed.
     include_posterior_predictive
         When ``True`` (default) and the model has observed RVs, run
-        :func:`sample_posterior_predictive_pro` on the final retained cloud.
-    posterior_predictive_draws
-        ``draw`` selection forwarded to :func:`sample_posterior_predictive_pro`
-        (which posterior snapshot(s) feed the forward grid).
-    posterior_predictive_n_replicates
-        Mixture PPC replicate count forwarded as ``n_ppc_replicates`` (default
-        ``400``).
+        :func:`sample_posterior_predictive_pro` on the full retained cloud.
     datatree_kwargs
         Extra keyword arguments forwarded to the internal DataTree builder
         (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
@@ -277,9 +256,7 @@ def sample_pro(
         dt = sample_posterior_predictive_pro(
             dt,
             model=model,
-            draw=posterior_predictive_draws,
-            n_ppc_replicates=posterior_predictive_n_replicates,
-            extend_datatree=True,
+            extend_inferencedata=True,
             random_seed=_spawn_forward_seed(random_seed),
         )
 
