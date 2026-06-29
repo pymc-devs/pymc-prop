@@ -8,6 +8,7 @@ import numpy as np
 
 from pymc_prop.compile import compile_batched_prior_grad
 from pymc_prop.fuse import (
+    DEFAULT_R_EPS,
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     FUSE_STEP_SIZE_STAT,
@@ -29,7 +30,7 @@ def run_sampler(
     step_size: float | None,
     learning_rate: float,
     random_seed: int | None,
-    r_eps: float = 1e-5,
+    r_eps: float = DEFAULT_R_EPS,
     fuse_diagnostics: dict[str, list[float]] | None = None,
 ) -> np.ndarray:
     """Run the PrO particle simulation loop.

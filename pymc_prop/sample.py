@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Literal
 
 import numpy as np
@@ -9,6 +10,7 @@ from pymc.model import modelcontext
 from xarray import DataTree
 
 from pymc_prop.arviz import _pro_to_datatree
+from pymc_prop.fuse import DEFAULT_R_EPS
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore, ScoringRule
@@ -22,7 +24,7 @@ def sample_pro(
     tune: int = 200,
     step_size: float | None = 1e-3,
     learning_rate: float = 1.0,
-    r_eps: float = 1e-5,
+    r_eps: float = DEFAULT_R_EPS,
     random_seed: int | None = None,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
@@ -96,6 +98,15 @@ def sample_pro(
     if step_size is None:
         if r_eps <= 0:
             raise ValueError("r_eps must be positive when step_size is None (FUSE).")
+        if r_eps > DEFAULT_R_EPS:
+            warnings.warn(
+                f"r_eps={r_eps:g} is larger than the recommended default ({DEFAULT_R_EPS:g}). "
+                "FUSE is typically less sensitive to an r_eps that is too small than one that "
+                "is too large. Inspect fuse_step_size traces and particle behaviour if the "
+                "schedule looks unstable.",
+                UserWarning,
+                stacklevel=2,
+            )
     elif step_size <= 0:
         raise ValueError("step_size must be positive.")
     if isinstance(scoring_rule, str):

@@ -8,7 +8,9 @@ import numpy as np
 
 from pymc_prop.particles import raw_drift, scaled_drift
 
-_GRAD_EPS = 1e-16
+DEFAULT_R_EPS = 1e-5
+# Floor on cumulative gradient energy in the FUSE denominator (not r_eps).
+_GRAD_EPS = 1e-12
 
 # Keys written to ``sample_stats`` when ``step_size=None``.
 FUSE_STEP_SIZE_STAT = "fuse_step_size"

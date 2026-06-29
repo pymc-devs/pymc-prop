@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pymc as pm
 import pytest
 
 from pymc_prop.fuse import (
+    DEFAULT_R_EPS,
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     FuseState,
@@ -142,6 +145,45 @@ def test_fuse_raw_vs_scaled_learning_rate():
     half_from_raw = particles - eta * raw
     assert not np.allclose(half_from_scaled, half_from_raw)
     np.testing.assert_allclose(half, half_from_scaled)
+
+
+def test_sample_pro_warns_when_r_eps_exceeds_default():
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
+
+    with pytest.warns(UserWarning, match="larger than the recommended default"):
+        sample_pro(
+            model=model,
+            n_particles=4,
+            n_steps=2,
+            tune=0,
+            step_size=None,
+            r_eps=DEFAULT_R_EPS * 10,
+            random_seed=0,
+            include_log_likelihood=False,
+        )
+
+
+def test_sample_pro_no_r_eps_warning_at_default():
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", UserWarning)
+        sample_pro(
+            model=model,
+            n_particles=4,
+            n_steps=2,
+            tune=0,
+            step_size=None,
+            r_eps=DEFAULT_R_EPS,
+            random_seed=0,
+            include_log_likelihood=False,
+        )
+
+    assert not any("r_eps" in str(w.message) for w in caught)
 
 
 def test_run_sampler_fuse_rejects_nonpositive_r_eps():
