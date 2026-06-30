@@ -11,8 +11,7 @@ from pymc.model import modelcontext
 from xarray import DataTree
 
 from pymc_prop.arviz import (
-    _forward_dict_to_grid_dataset,
-    _forward_from_posterior,
+    _PRO_SAMPLE_DIMS,
     _merge_remixed_forward_into_datatree,
     _mixture_remix_forward_dataset,
     _pro_to_datatree,
@@ -37,11 +36,11 @@ def sample_posterior_predictive_pro(
 ) -> DataTree:
     """PrO-native posterior predictive / out-of-sample forward sampling.
 
-    Builds a per-particle forward grid from the full retained ``dt.posterior``
-    cloud with ``sample_dims=["draw", "chain"]``, then remixes it into
-    draw-aligned mixture PPC draws. Do not use
-    :func:`pymc.sample_posterior_predictive` on PrO output without this
-    handling — default PyMC ``sample_dims`` mis-pairs multi-draw traces.
+    Builds a per-particle forward grid via :func:`pymc.sample_posterior_predictive`
+    on the full retained ``dt.posterior`` cloud (``sample_dims=["draw", "chain"]``),
+    then remixes it into draw-aligned mixture PPC draws. Do not call PyMC forward
+    sampling on PrO output with default ``sample_dims`` -- it mis-pairs multi-draw
+    traces.
 
     The exported ``posterior_predictive`` (or ``predictions``) group has shape
     ``(draw, *obs)`` with ``sample_dims=["draw"]``. Each retained index
@@ -94,20 +93,18 @@ def sample_posterior_predictive_pro(
             pm.set_data(data, coords=coords)
         try:
             forward_seed, remix_seed = _spawn_forward_and_remix_seeds(random_seed)
-            forward = _forward_from_posterior(
-                posterior,
-                model,
-                predictions=predictions,
-                dt=dt,
+            forward_group = "predictions" if predictions else "posterior_predictive"
+            forward_dt = pm.sample_posterior_predictive(
+                dt,
+                model=model,
                 var_names=var_names,
+                sample_dims=_PRO_SAMPLE_DIMS,
+                extend_inferencedata=False,
+                predictions=predictions,
                 random_seed=forward_seed,
+                progressbar=False,
             )
-            grid = _forward_dict_to_grid_dataset(
-                forward,
-                model,
-                posterior,
-                coords=coords,
-            )
+            grid = forward_dt[forward_group].dataset
             remixed = _mixture_remix_forward_dataset(
                 grid,
                 random_seed=remix_seed,

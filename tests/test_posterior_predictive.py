@@ -4,10 +4,7 @@ import pytest
 import xarray as xr
 
 from pymc_prop import sample_posterior_predictive_pro, sample_pro
-from pymc_prop.arviz import (
-    _forward_from_posterior,
-    _mixture_remix_forward_dataset,
-)
+from pymc_prop.arviz import _mixture_remix_forward_dataset
 
 
 def _gaussian_model(y=None):
@@ -242,15 +239,16 @@ def test_forward_grid_shape_before_remix():
     )
 
     with model:
-        forward = _forward_from_posterior(
-            dt["posterior"].dataset,
-            model,
-            predictions=False,
-            dt=dt,
+        forward_dt = pm.sample_posterior_predictive(
+            dt,
+            var_names=["y"],
+            sample_dims=["draw", "chain"],
+            extend_inferencedata=False,
             random_seed=14,
+            progressbar=False,
         )
 
-    assert forward["y"].shape == (n_steps, n_particles, n_obs)
+    assert forward_dt.posterior_predictive["y"].shape == (n_steps, n_particles, n_obs)
 
 
 def test_mixture_remix_matches_manual_isel():
