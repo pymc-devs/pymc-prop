@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Literal
 
-import numpy as np
 import pymc as pm
 from pymc.model import modelcontext
 from xarray import DataTree
@@ -28,8 +27,6 @@ def sample_posterior_predictive_pro(
     model=None,
     *,
     predictions: bool = False,
-    data: dict[str, Any] | None = None,
-    coords: dict[str, Any] | None = None,
     var_names: Sequence[str] | None = None,
     random_seed: int | None = None,
     extend_inferencedata: bool = True,
@@ -48,7 +45,7 @@ def sample_posterior_predictive_pro(
     snapshot (marginal mixture at :math:`Q_t`, not a joint draw from one
     :math:`\\theta`). ``draw`` and ``step`` align with ``posterior``. The
     analytic log marginal at observed data is in ``mixture_log_predictive``.
-
+  
     Parameters
     ----------
     dt
@@ -56,10 +53,6 @@ def sample_posterior_predictive_pro(
     predictions
         When ``False`` (default), populate ``posterior_predictive`` for
         in-sample PPC. When ``True``, populate ``predictions`` for OOS.
-    data, coords
-        Required when ``predictions=True``; forwarded to :func:`pymc.set_data`.
-        PrO applies and restores ``pm.Data`` when ``data`` is passed (PyMC's
-        :func:`pymc.sample_posterior_predictive` leaves ``set_data`` to the caller).
     extend_inferencedata
         When ``True``, merge the forward group into ``dt`` and return it.
 
@@ -73,53 +66,33 @@ def sample_posterior_predictive_pro(
     if "posterior" not in dt.children:
         raise ValueError("DataTree must contain a posterior group from sample_pro.")
 
-    if predictions and not data:
-        raise ValueError("predictions=True requires data= with pm.Data updates for OOS.")
-
     posterior = dt["posterior"].dataset
 
     with model:
-        restore_data = None
-        restore_coords = None
-        if predictions and data is not None:
-            restore_data = {
-                # Preserve original shared-variable dtype for pm.set_data restore.
-                name: np.asarray(model[name].eval()).copy() for name in data
-            }
-            if coords is not None:
-                restore_coords = {
-                    k: np.asarray(model.coords[k]) for k in coords if k in model.coords
-                }
-            pm.set_data(data, coords=coords)
-        try:
-            forward_seed, remix_seed = _spawn_forward_and_remix_seeds(random_seed)
-            forward_group = "predictions" if predictions else "posterior_predictive"
-            forward_dt = pm.sample_posterior_predictive(
-                dt,
-                model=model,
-                var_names=var_names,
-                sample_dims=_PRO_SAMPLE_DIMS,
-                extend_inferencedata=False,
-                predictions=predictions,
-                random_seed=forward_seed,
-                progressbar=False,
-            )
-            grid = forward_dt[forward_group].dataset
-            remixed = _mixture_remix_forward_dataset(
-                grid,
-                random_seed=remix_seed,
-            )
-            target = DataTree() if not extend_inferencedata else dt
-            result = _merge_remixed_forward_into_datatree(
-                target,
-                remixed,
-                predictions=predictions,
-                posterior=posterior,
-            )
-        finally:
-            if restore_data is not None:
-                pm.set_data(restore_data, coords=restore_coords)
-        return result
+        forward_seed, remix_seed = _spawn_forward_and_remix_seeds(random_seed)
+        forward_group = "predictions" if predictions else "posterior_predictive"
+        forward_dt = pm.sample_posterior_predictive(
+            dt,
+            model=model,
+            var_names=var_names,
+            sample_dims=_PRO_SAMPLE_DIMS,
+            extend_inferencedata=False,
+            predictions=predictions,
+            random_seed=forward_seed,
+            progressbar=False,
+        )
+        grid = forward_dt[forward_group].dataset
+        remixed = _mixture_remix_forward_dataset(
+            grid,
+            random_seed=remix_seed,
+        )
+        target = DataTree() if not extend_inferencedata else dt
+        return _merge_remixed_forward_into_datatree(
+            target,
+            remixed,
+            predictions=predictions,
+            posterior=posterior,
+        )
 
 
 def sample_pro(

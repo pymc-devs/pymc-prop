@@ -104,13 +104,8 @@ def test_oos_predictions_linear_regression():
             include_posterior_predictive=False,
             random_seed=5,
         )
-        sample_posterior_predictive_pro(
-            dt,
-            model=model,
-            predictions=True,
-            data={"x": x_test},
-            coords={"trial": np.arange(3)},
-        )
+        pm.set_data({"x": x_test}, coords={"trial": np.arange(3)})
+        sample_posterior_predictive_pro(dt, model=model, predictions=True)
 
     assert "predictions" in dt
     assert dt.predictions["y"].shape == (n_steps, 3)
@@ -137,13 +132,8 @@ def test_oos_does_not_mutate_posterior():
             random_seed=6,
         )
         posterior_before = {name: dt.posterior[name].values.copy() for name in dt.posterior.data_vars}
-        sample_posterior_predictive_pro(
-            dt,
-            model=model,
-            predictions=True,
-            data={"x": x_test},
-            coords={"trial": np.arange(2)},
-        )
+        pm.set_data({"x": x_test}, coords={"trial": np.arange(2)})
+        sample_posterior_predictive_pro(dt, model=model, predictions=True)
 
     for name, values in posterior_before.items():
         np.testing.assert_array_equal(dt.posterior[name].values, values)
@@ -170,13 +160,8 @@ def test_both_groups_separate_calls():
             random_seed=7,
         )
         sample_posterior_predictive_pro(dt, model=model)
-        sample_posterior_predictive_pro(
-            dt,
-            model=model,
-            predictions=True,
-            data={"x": x_test},
-            coords={"trial": np.arange(1)},
-        )
+        pm.set_data({"x": x_test}, coords={"trial": np.arange(1)})
+        sample_posterior_predictive_pro(dt, model=model, predictions=True)
 
     assert "posterior_predictive" in dt
     assert "predictions" in dt
@@ -318,21 +303,6 @@ def test_remix_seed_reproducibility():
     )
 
 
-def test_predictions_true_requires_data():
-    model = _gaussian_model()
-    dt = sample_pro(
-        model=model,
-        n_particles=4,
-        n_steps=4,
-        tune=0,
-        include_posterior_predictive=False,
-        random_seed=10,
-    )
-
-    with pytest.raises(ValueError, match="predictions=True requires data"):
-        sample_posterior_predictive_pro(dt, model=model, predictions=True)
-
-
 def test_extend_inferencedata_false_returns_forward_group():
     model = _gaussian_model()
     n_steps = 6
@@ -354,68 +324,6 @@ def test_extend_inferencedata_false_returns_forward_group():
     assert "posterior_predictive" in out
     assert out.posterior_predictive["y"].shape == (n_steps, 5)
     assert np.all(np.isfinite(out.posterior_predictive["y"].values))
-
-
-def test_oos_restores_pm_data():
-    x_train = np.linspace(0.0, 1.0, 4)
-    x_test = np.array([2.0, 2.5])
-
-    with pm.Model(coords={"trial": np.arange(4)}) as model:
-        x = pm.Data("x", x_train, dims="trial")
-        alpha = pm.Normal("alpha", 0.0, 1.0)
-        beta = pm.Normal("beta", 0.0, 1.0)
-        mu = alpha + beta * x
-        pm.Normal("y", mu=mu, sigma=0.5, observed=np.zeros(4), dims="trial")
-
-        dt = sample_pro(
-            model=model,
-            n_particles=4,
-            n_steps=5,
-            tune=0,
-            include_posterior_predictive=False,
-            random_seed=12,
-        )
-        sample_posterior_predictive_pro(
-            dt,
-            model=model,
-            predictions=True,
-            data={"x": x_test},
-            coords={"trial": np.arange(2)},
-        )
-
-        np.testing.assert_allclose(model["x"].eval(), x_train)
-        assert len(model.coords["trial"]) == len(x_train)
-
-
-def test_oos_restores_integer_pm_data_dtype():
-    x_train = np.array([0, 1, 0, 1], dtype="int32")
-    x_test = np.array([1, 0], dtype="int32")
-
-    with pm.Model(coords={"obs": np.arange(4)}) as model:
-        x = pm.Data("x", x_train, dims="obs")
-        beta = pm.Normal("beta", 0.0, 1.0, shape=2)
-        mu = beta[x]
-        pm.Normal("y", mu=mu, sigma=0.5, observed=np.zeros(4), dims="obs")
-
-        dt = sample_pro(
-            model=model,
-            n_particles=4,
-            n_steps=5,
-            tune=0,
-            include_posterior_predictive=False,
-            random_seed=21,
-        )
-        sample_posterior_predictive_pro(
-            dt,
-            model=model,
-            predictions=True,
-            data={"x": x_test},
-            coords={"obs": np.arange(2)},
-        )
-
-        restored = model["x"].eval()
-        assert restored.dtype == x_train.dtype
-        np.testing.assert_array_equal(restored, x_train)
 
 
 def test_sample_pro_requires_observed_rvs():
