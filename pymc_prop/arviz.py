@@ -362,28 +362,25 @@ def _mixture_remix_forward_dataset(
     return xr.Dataset(remixed_vars, coords=remixed_coords, attrs=attrs)
 
 
-def _merge_remixed_forward_into_datatree(
-    dt: DataTree,
+def _forward_group_datatree(
     remixed: xr.Dataset,
     *,
     predictions: bool,
-    posterior: xr.Dataset | None = None,
+    posterior: xr.Dataset,
 ) -> DataTree:
-    """Attach mixture-remixed forward draws to a PrO DataTree."""
+    """Build a DataTree containing only the mixture-remixed forward group."""
     if not remixed.data_vars:
-        return dt
+        return DataTree()
 
-    if posterior is None and "posterior" in dt.children:
-        posterior = dt["posterior"].dataset
-
-    if posterior is not None and "draw" in posterior.coords:
+    if "draw" in posterior.coords:
         remixed = remixed.assign_coords(draw=posterior.coords["draw"])
         if "step" in posterior.coords:
             remixed = remixed.assign_coords(step=("draw", posterior.coords["step"].values))
 
     group_name = "predictions" if predictions else "posterior_predictive"
-    dt[group_name] = DataTree(name=group_name, dataset=remixed)
-    return dt
+    out = DataTree()
+    out[group_name] = DataTree(name=group_name, dataset=remixed)
+    return out
 
 
 def _spawn_forward_seed(random_seed: int | None) -> int | None:

@@ -16,7 +16,21 @@ def _gaussian_model(y=None):
     return model
 
 
-def test_sample_pro_includes_posterior_predictive_by_default():
+def test_sample_pro_excludes_posterior_predictive():
+    model = _gaussian_model()
+
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=8,
+        tune=0,
+        random_seed=0,
+    )
+
+    assert "posterior_predictive" not in dt
+
+
+def test_posterior_predictive_via_separate_call():
     model = _gaussian_model()
     n_particles = 4
     n_steps = 8
@@ -29,6 +43,7 @@ def test_sample_pro_includes_posterior_predictive_by_default():
         tune=0,
         random_seed=0,
     )
+    sample_posterior_predictive_pro(dt, model=model)
 
     assert "posterior_predictive" in dt
     assert dt.posterior_predictive.attrs["sample_dims"] == ["draw"]
@@ -36,21 +51,6 @@ def test_sample_pro_includes_posterior_predictive_by_default():
     assert "chain" not in dt.posterior_predictive.dims
     assert dt.posterior_predictive["y"].shape == (n_steps, n_obs)
     assert np.all(np.isfinite(dt.posterior_predictive["y"].values))
-
-
-def test_include_posterior_predictive_false():
-    model = _gaussian_model()
-
-    dt = sample_pro(
-        model=model,
-        n_particles=4,
-        n_steps=8,
-        tune=0,
-        include_posterior_predictive=False,
-        random_seed=1,
-    )
-
-    assert "posterior_predictive" not in dt
 
 
 def test_plot_ppc_dist_smoke():
@@ -64,6 +64,7 @@ def test_plot_ppc_dist_smoke():
         tune=0,
         random_seed=4,
     )
+    sample_posterior_predictive_pro(dt, model=model)
     fig = az.plot_ppc_dist(dt)
     assert fig is not None
 
@@ -80,6 +81,7 @@ def test_plot_ppc_dist_draw_only_layout():
         tune=0,
         random_seed=40,
     )
+    sample_posterior_predictive_pro(dt, model=model)
     fig = az.plot_ppc_dist(dt, num_samples=5)
     assert fig is not None
 
@@ -101,7 +103,6 @@ def test_oos_predictions_linear_regression():
             n_particles=4,
             n_steps=n_steps,
             tune=0,
-            include_posterior_predictive=False,
             random_seed=5,
         )
         pm.set_data({"x": x_test}, coords={"trial": np.arange(3)})
@@ -128,7 +129,6 @@ def test_oos_does_not_mutate_posterior():
             n_particles=4,
             n_steps=5,
             tune=0,
-            include_posterior_predictive=False,
             random_seed=6,
         )
         posterior_before = {name: dt.posterior[name].values.copy() for name in dt.posterior.data_vars}
@@ -156,7 +156,6 @@ def test_both_groups_separate_calls():
             n_particles=4,
             n_steps=n_steps,
             tune=0,
-            include_posterior_predictive=False,
             random_seed=7,
         )
         sample_posterior_predictive_pro(dt, model=model)
@@ -183,7 +182,6 @@ def test_pymc_default_sample_dims_differs_on_multi_draw():
         n_particles=n_particles,
         n_steps=n_steps,
         tune=0,
-        include_posterior_predictive=False,
         random_seed=8,
     )
 
@@ -219,7 +217,6 @@ def test_forward_grid_shape_before_remix():
         n_particles=n_particles,
         n_steps=n_steps,
         tune=0,
-        include_posterior_predictive=False,
         random_seed=13,
     )
 
@@ -277,7 +274,6 @@ def test_remix_seed_reproducibility():
         n_particles=4,
         n_steps=6,
         tune=0,
-        include_posterior_predictive=False,
         random_seed=15,
     )
     dt_b = sample_pro(
@@ -285,7 +281,6 @@ def test_remix_seed_reproducibility():
         n_particles=4,
         n_steps=6,
         tune=0,
-        include_posterior_predictive=False,
         random_seed=15,
     )
 
@@ -311,7 +306,6 @@ def test_extend_inferencedata_false_returns_forward_group():
         n_particles=4,
         n_steps=n_steps,
         tune=0,
-        include_posterior_predictive=False,
         random_seed=11,
     )
 
@@ -357,6 +351,7 @@ def test_posterior_predictive_draw_aligned_with_posterior():
         tune=tune,
         random_seed=30,
     )
+    sample_posterior_predictive_pro(dt, model=model)
 
     np.testing.assert_array_equal(
         dt.posterior_predictive.coords["draw"].values,
@@ -380,6 +375,7 @@ def test_posterior_predictive_no_chain_dim():
         tune=0,
         random_seed=31,
     )
+    sample_posterior_predictive_pro(dt, model=model)
 
     assert "chain" not in dt.posterior_predictive.dims
 
@@ -396,6 +392,7 @@ def test_mixture_remix_uses_all_retained_draws():
         tune=0,
         random_seed=32,
     )
+    sample_posterior_predictive_pro(dt, model=model)
 
     assert dt.posterior_predictive.sizes["draw"] == n_steps
     assert dt.posterior_predictive["y"].shape[0] == n_steps

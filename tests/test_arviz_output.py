@@ -318,7 +318,6 @@ def test_mixture_log_predictive_total_matches_sum():
         n_steps=5,
         tune=0,
         step_size=5e-3,
-        include_posterior_predictive=False,
         random_seed=11,
     )
 
@@ -363,7 +362,6 @@ def test_mixture_log_predictive_dims():
         n_particles=4,
         n_steps=6,
         tune=2,
-        include_posterior_predictive=False,
         random_seed=6,
     )
 
@@ -390,7 +388,6 @@ def test_multi_observed_rv_mixture_log_predictive():
         n_particles=4,
         n_steps=10,
         tune=0,
-        include_posterior_predictive=False,
         random_seed=3,
     )
 

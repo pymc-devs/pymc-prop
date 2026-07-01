@@ -11,11 +11,10 @@ from xarray import DataTree
 
 from pymc_prop.arviz import (
     _PRO_SAMPLE_DIMS,
-    _merge_remixed_forward_into_datatree,
+    _forward_group_datatree,
     _mixture_remix_forward_dataset,
     _pro_to_datatree,
     _spawn_forward_and_remix_seeds,
-    _spawn_forward_seed,
 )
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sampler import run_sampler
@@ -45,7 +44,10 @@ def sample_posterior_predictive_pro(
     snapshot (marginal mixture at :math:`Q_t`, not a joint draw from one
     :math:`\\theta`). ``draw`` and ``step`` align with ``posterior``. The
     analytic log marginal at observed data is in ``mixture_log_predictive``.
-  
+
+    For out-of-sample ``predictions=True``, call :func:`pymc.set_data` on the
+    model before this function.
+
     Parameters
     ----------
     dt
@@ -86,13 +88,16 @@ def sample_posterior_predictive_pro(
             grid,
             random_seed=remix_seed,
         )
-        target = DataTree() if not extend_inferencedata else dt
-        return _merge_remixed_forward_into_datatree(
-            target,
+        forward_dt = _forward_group_datatree(
             remixed,
             predictions=predictions,
             posterior=posterior,
         )
+        if extend_inferencedata:
+            for name in forward_dt.children:
+                dt[name] = forward_dt[name]
+            return dt
+        return forward_dt
 
 
 def sample_pro(
@@ -109,7 +114,6 @@ def sample_pro(
     include_log_likelihood: bool = True,
     include_observed_data: bool = True,
     include_sample_stats: bool = True,
-    include_posterior_predictive: bool = True,
     datatree_kwargs: dict[str, Any] | None = None,
 ) -> DataTree:
     """Run the PrO particle sampler on a PyMC model.
@@ -126,9 +130,8 @@ def sample_pro(
     :math:`\\hat Q = \\frac{1}{p}\\sum_j \\delta_{\\theta^{(j)}}` (no ``chain``
     dimension). ``sample_stats.mixture_log_predictive_total`` sums those values
     over observations. This is the log predictive PrO targets; it differs from
-    ``mean_log_score``, which averages per-particle log-score sums. Optional
-    ``posterior_predictive`` holds mixture PPC draws (see
-    :func:`sample_posterior_predictive_pro`).
+    ``mean_log_score``, which averages per-particle log-score sums. Mixture PPC
+    draws are added separately via :func:`sample_posterior_predictive_pro`.
 
     Parameters
     ----------
@@ -155,9 +158,6 @@ def sample_pro(
         Control which optional DataTree groups are populated. Set
         ``include_log_likelihood=False`` to skip the post-sampling logp pass
         when only particle trajectories are needed.
-    include_posterior_predictive
-        When ``True`` (default) and the model has observed RVs, run
-        :func:`sample_posterior_predictive_pro` on the full retained cloud.
     datatree_kwargs
         Extra keyword arguments forwarded to the internal DataTree builder
         (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
@@ -221,13 +221,5 @@ def sample_pro(
         include_sample_stats=include_sample_stats,
         datatree_kwargs=datatree_kwargs,
     )
-
-    if include_posterior_predictive and model.observed_RVs:
-        dt = sample_posterior_predictive_pro(
-            dt,
-            model=model,
-            extend_inferencedata=True,
-            random_seed=_spawn_forward_seed(random_seed),
-        )
 
     return dt
