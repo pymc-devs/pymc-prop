@@ -52,7 +52,7 @@ with pm.Model() as model:
 
 ## Tutorials
 
-The main walkthrough is [examples/bimodal_gaussian.ipynb](examples/bimodal_gaussian.ipynb): simulate a bimodal Gaussian mixture, fit a deliberately misspecified unimodal location model with `sample_pro`, and inspect the PrO posterior predictive. We find that, since the true data-generating process can be recovered by a mixture over the model class, the PrO posterior recovers it exactly. The same experiment with FUSE adaptive step sizes is in [examples/bimodal_gaussian_fuse.ipynb](examples/bimodal_gaussian_fuse.ipynb).
+The main walkthrough is [examples/bimodal_gaussian.ipynb](examples/bimodal_gaussian.ipynb): simulate a bimodal Gaussian mixture, fit a deliberately misspecified unimodal location model with `sample_pro` (FUSE adaptive step size via `step_size=None`), and inspect the PrO posterior predictive. We find that, since the true data-generating process can be recovered by a mixture over the model class, the PrO posterior recovers it exactly.
 
 ## Implementation
 
