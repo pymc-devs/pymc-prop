@@ -28,36 +28,36 @@ SIGMA = np.array([[1.0, 0.9], [0.9, 1.0]])
 SIGMA_INV = np.linalg.inv(SIGMA)
 
 
-def _gist_drift(particles: np.ndarray) -> np.ndarray:
-    """Pyprop/gist drift ζ(x) = -∇V(x) for the correlated Gaussian target."""
+def _gaussian_target_drift(particles: np.ndarray) -> np.ndarray:
+    """Drift ζ(x) = -∇V(x) for the correlated Gaussian target."""
     return -(particles - MU) @ SIGMA_INV.T
 
 
-def _simulate_fuse_gist(
+def _simulate_fuse_forward_reference(
     rng: np.random.Generator,
     init_particles: np.ndarray,
     num_steps: int,
     r_eps: float,
     lambda_n: float = 1.0,
 ) -> np.ndarray:
-    """NumPy port of the JAX gist / pyprop ``simulate_fuse`` (reference)."""
+    """Standalone NumPy reference for forward-flow FUSE on the Gaussian target."""
     eta0 = r_eps
-    drifts0 = _gist_drift(init_particles)
-    half_ref = init_particles + eta0 * drifts0
+    drifts0 = _gaussian_target_drift(init_particles)
+    reference_half_step = init_particles + eta0 * drifts0
     noise0 = np.sqrt(2.0 * lambda_n * eta0) * rng.standard_normal(init_particles.shape)
-    particles = half_ref + noise0
+    particles = reference_half_step + noise0
     r_bar = r_eps
     grad_energy = 0.0
     trajectory = [particles.copy()]
 
     for _ in range(num_steps - 1):
-        drifts = _gist_drift(particles)
+        drifts = _gaussian_target_drift(particles)
         grad_energy += float(np.mean(np.sum(drifts * drifts, axis=1)))
         eta = r_bar / np.sqrt(grad_energy + 1e-16)
         half = particles + eta * drifts
         noise = np.sqrt(2.0 * lambda_n * eta) * rng.standard_normal(particles.shape)
         particles = half + noise
-        d_next = fuse_distance(half_ref, half)
+        d_next = fuse_distance(reference_half_step, half)
         r_bar = max(r_bar, max(r_eps, d_next))
         trajectory.append(particles.copy())
 
@@ -78,7 +78,7 @@ def _simulate_fuse_pymc_helpers(
     trajectory = []
 
     for _ in range(num_steps):
-        wgf_grad = -_gist_drift(particles)
+        wgf_grad = -_gaussian_target_drift(particles)
 
         eta, fuse_state, _ = fuse_step_size(
             particles,
@@ -102,12 +102,12 @@ def test_fuse_schedule_parity_at_learning_rate_one():
     r_eps = 1e-4
     init = np.random.default_rng(99).standard_normal((n_particles, dim)) * 0.3 - 4.0
 
-    rng_gist = np.random.default_rng(0)
+    rng_ref = np.random.default_rng(0)
     rng_pymc = np.random.default_rng(0)
-    traj_gist = _simulate_fuse_gist(rng_gist, init, num_steps, r_eps)
+    traj_ref = _simulate_fuse_forward_reference(rng_ref, init, num_steps, r_eps)
     traj_pymc = _simulate_fuse_pymc_helpers(rng_pymc, init, num_steps, r_eps)
 
-    np.testing.assert_allclose(traj_pymc, traj_gist, rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(traj_pymc, traj_ref, rtol=0.0, atol=1e-12)
 
 
 def test_fuse_raw_vs_scaled_learning_rate():
@@ -126,14 +126,14 @@ def test_fuse_raw_vs_scaled_learning_rate():
 
     fuse_state = FuseState()
     eta = r_eps
-    fuse_state.half_ref = particles - eta * scaled
+    fuse_state.reference_half_step = particles - eta * scaled
     fuse_state.r_bar = r_eps
-    fuse_state.bootstrapped = True
+    fuse_state.reference_half_step_set = True
 
     fuse_state.grad_energy += fuse_grad_energy(raw)
     eta = fuse_state.r_bar / np.sqrt(fuse_state.grad_energy + 1e-16)
     half = particles - eta * scaled
-    d_next = fuse_distance(fuse_state.half_ref, half)
+    d_next = fuse_distance(fuse_state.reference_half_step, half)
     fuse_state.r_bar = max(fuse_state.r_bar, max(r_eps, d_next))
 
     expected_g = fuse_grad_energy(raw)
