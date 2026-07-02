@@ -31,6 +31,9 @@ def run_sampler(
 
     Each step: compile drift, then :func:`~pymc_prop.particles.time_step`.
     """
+    if n_particles < 2:
+        raise ValueError("n_particles must be at least 2.")
+
     rng = np.random.default_rng(random_seed)
 
     # Sec. 5: particles in unconstrained value_vars space

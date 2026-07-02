@@ -2,15 +2,102 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, Literal
 
+import pymc as pm
 from pymc.model import modelcontext
 from xarray import DataTree
 
-from pymc_prop.arviz import _pro_to_datatree
+from pymc_prop.arviz import (
+    _PRO_SAMPLE_DIMS,
+    _forward_group_datatree,
+    _mixture_remix_forward_dataset,
+    _pro_to_datatree,
+    _spawn_forward_and_remix_seeds,
+)
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore, ScoringRule
+
+
+def sample_posterior_predictive_pro(
+    dt: DataTree,
+    model=None,
+    *,
+    predictions: bool = False,
+    var_names: Sequence[str] | None = None,
+    random_seed: int | None = None,
+    extend_inferencedata: bool = True,
+) -> DataTree:
+    """PrO-native posterior predictive / out-of-sample forward sampling.
+
+    Builds a per-particle forward grid via :func:`pymc.sample_posterior_predictive`
+    on the full retained ``dt.posterior`` cloud (``sample_dims=["draw", "chain"]``),
+    then remixes it into draw-aligned mixture PPC draws. Do not call PyMC forward
+    sampling on PrO output with default ``sample_dims`` -- it mis-pairs multi-draw
+    traces.
+
+    The exported ``posterior_predictive`` (or ``predictions``) group has shape
+    ``(draw, *obs)`` with ``sample_dims=["draw"]``. Each retained index
+    independently resamples particle ``chain`` per observation element at that
+    snapshot (marginal mixture at :math:`Q_t`, not a joint draw from one
+    :math:`\\theta`). ``draw`` and ``step`` align with ``posterior``. The
+    analytic log marginal at observed data is in ``mixture_log_predictive``.
+
+    For out-of-sample ``predictions=True``, call :func:`pymc.set_data` on the
+    model before this function.
+
+    Parameters
+    ----------
+    dt
+        PrO :class:`~xarray.DataTree` from :func:`sample_pro`.
+    predictions
+        When ``False`` (default), populate ``posterior_predictive`` for
+        in-sample PPC. When ``True``, populate ``predictions`` for OOS.
+    extend_inferencedata
+        When ``True``, merge the forward group into ``dt`` and return it.
+
+    See Also
+    --------
+    sample_pro
+        Builds the PrO DataTree; ``mixture_log_predictive`` holds the marginal
+        log predictive at observed data.
+    """
+    model = modelcontext(model)
+    if "posterior" not in dt.children:
+        raise ValueError("DataTree must contain a posterior group from sample_pro.")
+
+    posterior = dt["posterior"].dataset
+
+    with model:
+        forward_seed, remix_seed = _spawn_forward_and_remix_seeds(random_seed)
+        forward_group = "predictions" if predictions else "posterior_predictive"
+        forward_dt = pm.sample_posterior_predictive(
+            dt,
+            model=model,
+            var_names=var_names,
+            sample_dims=_PRO_SAMPLE_DIMS,
+            extend_inferencedata=False,
+            predictions=predictions,
+            random_seed=forward_seed,
+            progressbar=False,
+        )
+        grid = forward_dt[forward_group].dataset
+        remixed = _mixture_remix_forward_dataset(
+            grid,
+            random_seed=remix_seed,
+        )
+        forward_dt = _forward_group_datatree(
+            remixed,
+            predictions=predictions,
+            posterior=posterior,
+        )
+        if extend_inferencedata:
+            for name in forward_dt.children:
+                dt[name] = forward_dt[name]
+            return dt
+        return forward_dt
 
 
 def sample_pro(
@@ -34,9 +121,17 @@ def sample_pro(
     Free RVs must be native unconstrained; reparameterize manually for now.
 
     Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
-    ``observed_data``, ``log_likelihood``, and ``sample_stats`` groups.
-    Retained steps map to ``draw``; simulation step
+    ``observed_data``, ``log_likelihood``, ``mixture_log_predictive``, and
+    ``sample_stats`` groups. Retained steps map to ``draw``; simulation step
     numbers are in the ``step`` coordinate; particles map to ``chain``.
+
+    The ``mixture_log_predictive`` group holds :math:`\\log p_{\\hat Q}(y_i)` at
+    observed data under the empirical particle mixture
+    :math:`\\hat Q = \\frac{1}{p}\\sum_j \\delta_{\\theta^{(j)}}` (no ``chain``
+    dimension). ``sample_stats.mixture_log_predictive_total`` sums those values
+    over observations. This is the log predictive PrO targets; it differs from
+    ``mean_log_score``, which averages per-particle log-score sums. Mixture PPC
+    draws are added separately via :func:`sample_posterior_predictive_pro`.
 
     Parameters
     ----------
@@ -70,6 +165,9 @@ def sample_pro(
 
     See Also
     --------
+    sample_posterior_predictive_pro
+        In-sample mixture PPC and OOS forward sampling (contrast with
+        ``mixture_log_predictive``).
     compile_drift_for_logscore
         Log-score WGF drift (compiled interaction + prior grad).
     LogScore
@@ -85,6 +183,12 @@ def sample_pro(
         raise ValueError("tune must be non-negative.")
     if step_size <= 0:
         raise ValueError("step_size must be positive.")
+    if learning_rate <= 0:
+        raise ValueError("learning_rate must be positive.")
+    if not model.observed_RVs:
+        raise ValueError(
+            "sample_pro requires a model with observed variables for log-score sampling."
+        )
     if isinstance(scoring_rule, str):
         if scoring_rule != "log":
             raise ValueError("Only log-score is supported in this version.")
@@ -104,7 +208,7 @@ def sample_pro(
         random_seed=random_seed,
     )
 
-    return _pro_to_datatree(
+    dt = _pro_to_datatree(
         particles,
         model=model,
         mapper=mapper,
@@ -117,3 +221,5 @@ def sample_pro(
         include_sample_stats=include_sample_stats,
         datatree_kwargs=datatree_kwargs,
     )
+
+    return dt
