@@ -12,7 +12,8 @@ from pymc_prop.fuse import (
     DEFAULT_R_EPS,
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
-    FuseState,
+    fuse_adaptive_step,
+    fuse_bootstrap_step,
     fuse_distance,
     fuse_grad_energy,
     fuse_step_size,
@@ -41,6 +42,7 @@ def _simulate_fuse_forward_reference(
     lambda_n: float = 1.0,
 ) -> np.ndarray:
     """Standalone NumPy reference for forward-flow FUSE on the Gaussian target."""
+    # t = 0: η_0 = r_ε, freeze x_{1/2}
     eta0 = r_eps
     drifts0 = _gaussian_target_drift(init_particles)
     reference_half_step = init_particles + eta0 * drifts0
@@ -51,6 +53,7 @@ def _simulate_fuse_forward_reference(
     trajectory = [particles.copy()]
 
     for _ in range(num_steps - 1):
+        # t ≥ 1: accumulate G_t, η_t = r̄_t / sqrt(G_t), update r̄_t
         drifts = _gaussian_target_drift(particles)
         grad_energy += float(np.mean(np.sum(drifts * drifts, axis=1)))
         eta = r_bar / np.sqrt(grad_energy + 1e-16)
@@ -74,13 +77,22 @@ def _simulate_fuse_pymc_helpers(
     """FUSE loop using pymc_prop helpers (PrO sign convention)."""
     particles = init_particles.copy()
     prior_grad = np.zeros_like(particles)
-    fuse_state = FuseState()
     trajectory = []
 
-    for _ in range(num_steps):
-        wgf_grad = -_gaussian_target_drift(particles)
+    wgf_grad = -_gaussian_target_drift(particles)
+    # t = 0 bootstrap, then Euler-Maruyama step
+    eta, fuse_state, _ = fuse_bootstrap_step(
+        particles, wgf_grad, prior_grad, learning_rate, r_eps
+    )
+    particles = time_step(
+        particles, prior_grad, wgf_grad, eta, learning_rate, rng
+    )
+    trajectory.append(particles.copy())
 
-        eta, fuse_state, _ = fuse_step_size(
+    for _ in range(num_steps - 1):
+        wgf_grad = -_gaussian_target_drift(particles)
+        # t ≥ 1 adaptive η_t, then Euler-Maruyama step
+        eta, fuse_state, _ = fuse_adaptive_step(
             particles,
             wgf_grad,
             prior_grad,
@@ -124,17 +136,13 @@ def test_fuse_raw_vs_scaled_learning_rate():
     scaled = scaled_drift(wgf_grad, prior_grad, learning_rate)
     assert not np.allclose(raw, scaled)
 
-    fuse_state = FuseState()
-    eta = r_eps
-    fuse_state.reference_half_step = particles - eta * scaled
-    fuse_state.r_bar = r_eps
-    fuse_state.reference_half_step_set = True
-
-    fuse_state.grad_energy += fuse_grad_energy(raw)
-    eta = fuse_state.r_bar / np.sqrt(fuse_state.grad_energy + 1e-16)
+    _, fuse_state, _ = fuse_bootstrap_step(
+        particles, wgf_grad, prior_grad, learning_rate, r_eps
+    )
+    eta, fuse_state, _ = fuse_adaptive_step(
+        particles, wgf_grad, prior_grad, learning_rate, fuse_state, r_eps
+    )
     half = particles - eta * scaled
-    d_next = fuse_distance(fuse_state.reference_half_step, half)
-    fuse_state.r_bar = max(fuse_state.r_bar, max(r_eps, d_next))
 
     expected_g = fuse_grad_energy(raw)
     wrong_g = fuse_grad_energy(scaled)
@@ -145,6 +153,45 @@ def test_fuse_raw_vs_scaled_learning_rate():
     half_from_raw = particles - eta * raw
     assert not np.allclose(half_from_scaled, half_from_raw)
     np.testing.assert_allclose(half, half_from_scaled)
+
+
+def test_fuse_step_size_dispatches_bootstrap_and_adaptive():
+    """Thin dispatcher matches explicit bootstrap then adaptive calls."""
+    rng = np.random.default_rng(7)
+    particles = rng.standard_normal((4, 2))
+    wgf_grad = rng.standard_normal((4, 2))
+    prior_grad = rng.standard_normal((4, 2))
+    learning_rate = 1.0
+    r_eps = 1e-5
+
+    eta_boot, state_boot, diag_boot = fuse_bootstrap_step(
+        particles, wgf_grad, prior_grad, learning_rate, r_eps
+    )
+    eta_disp, state_disp, diag_disp = fuse_step_size(
+        particles, wgf_grad, prior_grad, learning_rate, None, r_eps
+    )
+    assert eta_boot == pytest.approx(eta_disp)
+    np.testing.assert_allclose(
+        state_boot.reference_half_step, state_disp.reference_half_step
+    )
+    assert state_boot.r_bar == pytest.approx(state_disp.r_bar)
+    assert state_boot.grad_energy == pytest.approx(state_disp.grad_energy)
+    assert diag_boot.step_size == pytest.approx(diag_disp.step_size)
+    assert diag_boot.gradient_energy == pytest.approx(diag_disp.gradient_energy)
+    assert diag_boot.half_step_distance_sq == pytest.approx(
+        diag_disp.half_step_distance_sq
+    )
+
+    eta_adapt, state_adapt, diag_adapt = fuse_adaptive_step(
+        particles, wgf_grad, prior_grad, learning_rate, state_boot, r_eps
+    )
+    eta_disp2, state_disp2, diag_disp2 = fuse_step_size(
+        particles, wgf_grad, prior_grad, learning_rate, state_disp, r_eps
+    )
+    assert eta_adapt == pytest.approx(eta_disp2)
+    assert state_adapt.r_bar == pytest.approx(state_disp2.r_bar)
+    assert state_adapt.grad_energy == pytest.approx(state_disp2.grad_energy)
+    assert diag_adapt.step_size == pytest.approx(diag_disp2.step_size)
 
 
 def test_sample_pro_warns_when_r_eps_exceeds_default():

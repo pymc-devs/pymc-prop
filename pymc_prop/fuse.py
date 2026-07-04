@@ -35,24 +35,17 @@ class FuseStepDiagnostics:
 
 @dataclass
 class FuseState:
-    """Mutable FUSE schedule state (Sharrock & Nemeth 2025, Sec. 5.1.1).
+    """Mutable FUSE schedule state after bootstrap (Sharrock & Nemeth 2025, Sec. 5.1.1).
 
-    ``reference_half_step`` is the fixed initial half-step cloud
-    (:math:`x_{1/2}`). ``grad_energy`` accumulates mean squared
-    **raw** drift (:math:`g_s^2`); ``r_bar`` tracks the running distance floor.
-    ``learning_rate`` is not applied when accumulating ``grad_energy``.
-
-    ``reference_half_step_set`` starts ``False``. The first :func:`fuse_step_size`
-    call freezes ``reference_half_step``, sets ``η_0 = r_ε``, and initialises
-    ``r_bar`` / ``grad_energy``; it then sets ``reference_half_step_set`` to
-    ``True``. Later calls run the adaptive update and compare each new
-    half-step against ``reference_half_step``.
+    Created by :func:`fuse_bootstrap_step`. ``reference_half_step`` is the fixed
+    initial half-step cloud (:math:`x_{1/2}`). ``grad_energy`` accumulates mean
+    squared **raw** drift (:math:`g_s^2`); ``r_bar`` tracks the running distance
+    floor. ``learning_rate`` is not applied when accumulating ``grad_energy``.
     """
 
-    reference_half_step: np.ndarray | None = None
-    r_bar: float = 0.0
-    grad_energy: float = 0.0
-    reference_half_step_set: bool = False
+    reference_half_step: np.ndarray
+    r_bar: float
+    grad_energy: float
 
 
 def fuse_grad_energy(raw: np.ndarray) -> float:
@@ -68,7 +61,40 @@ def fuse_distance(
     return float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
 
 
-def fuse_step_size(
+def fuse_bootstrap_step(
+    particles: np.ndarray,
+    wgf_grad: np.ndarray,
+    prior_grad: np.ndarray,
+    learning_rate: float,
+    r_eps: float,
+) -> tuple[float, FuseState, FuseStepDiagnostics]:
+    """Initial FUSE schedule step (:math:`t = 0`).
+
+    Sets :math:`\\eta_0 = r_\\varepsilon`, freezes the reference half-step cloud
+    :math:`x_{1/2}`, and seeds :math:`\\bar r_0 = r_\\varepsilon` with
+    :math:`G_0 = 0`. Half-steps use :func:`~pymc_prop.particles.scaled_drift`;
+    reported ``gradient_energy`` uses :func:`~pymc_prop.particles.raw_drift`
+    (no ``learning_rate``) but is not yet accumulated into ``grad_energy``.
+    """
+    scaled = scaled_drift(wgf_grad, prior_grad, learning_rate)
+    raw = raw_drift(wgf_grad, prior_grad)
+
+    # t = 0: η_0 = r_ε; freeze x_{1/2}; seed r̄_0 = r_ε, G_0 = 0
+    step_size = r_eps
+    state = FuseState(
+        reference_half_step=particles - step_size * scaled,  # x_{1/2}
+        r_bar=r_eps,
+        grad_energy=0.0,
+    )
+    diag = FuseStepDiagnostics(
+        step_size=step_size,
+        gradient_energy=fuse_grad_energy(raw),  # g_0² (diagnostic only; not in G_t yet)
+        half_step_distance_sq=0.0,  # no d_s until a second half-step exists
+    )
+    return step_size, state, diag
+
+
+def fuse_adaptive_step(
     particles: np.ndarray,
     wgf_grad: np.ndarray,
     prior_grad: np.ndarray,
@@ -76,7 +102,7 @@ def fuse_step_size(
     state: FuseState,
     r_eps: float,
 ) -> tuple[float, FuseState, FuseStepDiagnostics]:
-    """Return adaptive step size, updated state, and per-step FUSE diagnostics.
+    """Adaptive FUSE schedule update (:math:`t \\geq 1`).
 
     Particle discretization of the forward-flow FUSE schedule (Sharrock & Nemeth
     2025, Sec. 5.1.1)::
@@ -92,47 +118,18 @@ def fuse_step_size(
     Half-steps and :func:`~pymc_prop.particles.time_step` use
     :func:`~pymc_prop.particles.scaled_drift`; ``g_s²`` uses
     :func:`~pymc_prop.particles.raw_drift` (no ``learning_rate``).
-
-    When ``reference_half_step_set`` is ``False``, the initial schedule step
-    fixes ``reference_half_step`` (:math:`x_{1/2}`), sets
-    ``η_0 = r_ε``, and seeds ``r̄_0 = r_ε`` with ``G_0 = 0``. Each later call
-    runs the adaptive update.
     """
     scaled = scaled_drift(wgf_grad, prior_grad, learning_rate)
     raw = raw_drift(wgf_grad, prior_grad)
 
-    if not state.reference_half_step_set:
-        # Initial schedule step: freeze reference half-step; adaptive loop after this.
-        step_size = r_eps
-        state.reference_half_step = particles - step_size * scaled
-        state.r_bar = r_eps
-        state.grad_energy = 0.0
-        state.reference_half_step_set = True
-        diag = FuseStepDiagnostics(
-            step_size=step_size,
-            gradient_energy=fuse_grad_energy(raw),
-            half_step_distance_sq=0.0,
-        )
-        return step_size, state, diag
+    g_inc = fuse_grad_energy(raw)  # g_s² (raw ζ, no λ_n)
+    state.grad_energy += g_inc  # G_t
 
-    # Incremental gradient energy at the current cloud (raw drift).
-    g_inc = fuse_grad_energy(raw)
-
-    # Add to cumulative gradient energy.
-    state.grad_energy += g_inc
-
-    # Step size = running distance floor / sqrt(cumulative gradient energy).
+    # η_t = r̄_t / sqrt(G_t)
     step_size = state.r_bar / np.sqrt(state.grad_energy + _GRAD_EPS)
-
-    # Deterministic half-step (scaled drift, includes learning_rate).
-    current_half_step = particles - step_size * scaled
-    assert state.reference_half_step is not None
-
-    # Distance from the fixed reference half-step to the current half-step.
-    d_next = fuse_distance(state.reference_half_step, current_half_step)
-
-    # Running max of prior floor, r_eps, and half-step distance.
-    state.r_bar = max(state.r_bar, max(r_eps, d_next))
+    current_half_step = particles - step_size * scaled  # x_{s-1/2}
+    d_next = fuse_distance(state.reference_half_step, current_half_step)  # d_s
+    state.r_bar = max(state.r_bar, max(r_eps, d_next))  # r̄_t
 
     diag = FuseStepDiagnostics(
         step_size=step_size,
@@ -140,3 +137,28 @@ def fuse_step_size(
         half_step_distance_sq=d_next * d_next,
     )
     return step_size, state, diag
+
+
+def fuse_step_size(
+    particles: np.ndarray,
+    wgf_grad: np.ndarray,
+    prior_grad: np.ndarray,
+    learning_rate: float,
+    state: FuseState | None,
+    r_eps: float,
+) -> tuple[float, FuseState, FuseStepDiagnostics]:
+    """Return adaptive step size, updated state, and per-step FUSE diagnostics.
+
+    Dispatches to :func:`fuse_bootstrap_step` when ``state`` is ``None``;
+    otherwise :func:`fuse_adaptive_step`. Prefer calling those functions
+    directly when the schedule phase should be explicit at the call site.
+    """
+    if state is None:
+        # t = 0 bootstrap (η_0, x_{1/2})
+        return fuse_bootstrap_step(
+            particles, wgf_grad, prior_grad, learning_rate, r_eps
+        )
+    # t ≥ 1 adaptive update (η_t, r̄_t, G_t)
+    return fuse_adaptive_step(
+        particles, wgf_grad, prior_grad, learning_rate, state, r_eps
+    )

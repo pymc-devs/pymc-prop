@@ -13,7 +13,8 @@ from pymc_prop.fuse import (
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     FUSE_STEP_SIZE_STAT,
     FuseState,
-    fuse_step_size,
+    fuse_adaptive_step,
+    fuse_bootstrap_step,
 )
 from pymc_prop.particles import initialize_particles, time_step
 from pymc_prop.points import PointMapper
@@ -67,7 +68,8 @@ def run_sampler(
         batched_prior_grad_fn = compile_batched_prior_grad(mapper, model)
 
     use_fuse = step_size is None
-    fuse_state = FuseState() if use_fuse else None
+    # FUSE Sec. 5.1.1: None until bootstrap (t=0); then mutable schedule state
+    fuse_state: FuseState | None = None
 
     retained: List[np.ndarray] = []
 
@@ -81,15 +83,25 @@ def run_sampler(
             prior_grad = np.asarray(batched_prior_grad_fn(particles), dtype=float)
 
         if use_fuse:
-            assert fuse_state is not None
-            eta, fuse_state, diag = fuse_step_size(
-                particles,
-                wgf_grad,
-                prior_grad,
-                learning_rate,
-                fuse_state,
-                r_eps,
-            )
+            if fuse_state is None:
+                # t = 0: η_0 = r_ε, freeze reference half-step x_{1/2}
+                eta, fuse_state, diag = fuse_bootstrap_step(
+                    particles,
+                    wgf_grad,
+                    prior_grad,
+                    learning_rate,
+                    r_eps,
+                )
+            else:
+                # t ≥ 1: η_t = r̄_t / sqrt(G_t), update r̄_t from half-step distances
+                eta, fuse_state, diag = fuse_adaptive_step(
+                    particles,
+                    wgf_grad,
+                    prior_grad,
+                    learning_rate,
+                    fuse_state,
+                    r_eps,
+                )
             if fuse_diagnostics is not None and step >= tune:
                 fuse_diagnostics.setdefault(FUSE_GRADIENT_ENERGY_STAT, []).append(diag.gradient_energy)
                 fuse_diagnostics.setdefault(FUSE_HALF_STEP_DISTANCE_SQ_STAT, []).append(diag.half_step_distance_sq)
