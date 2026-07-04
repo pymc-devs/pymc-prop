@@ -2,6 +2,7 @@ import numpy as np
 import pymc as pm
 import pytest
 from arviz_base import extract
+from scipy.special import logsumexp
 from xarray import DataTree
 
 from pymc_prop.arviz import _pro_to_datatree
@@ -67,8 +68,20 @@ def test_datatree_includes_observed_log_likelihood_and_sample_stats():
     assert "y" in dt.log_likelihood
     assert set(dt.log_likelihood["y"].dims) >= {"chain", "draw", "obs"}
 
+    assert "mixture_log_predictive" in dt
+    assert "y" in dt.mixture_log_predictive
+    assert "chain" not in dt.mixture_log_predictive["y"].dims
+    assert set(dt.mixture_log_predictive["y"].dims) >= {"draw", "obs"}
+
     assert "sample_stats" in dt
-    for var in ("particle_spread", "mean_log_score", "se_log_score", "learning_rate", "mu_spread"):
+    for var in (
+        "particle_spread",
+        "mean_log_score",
+        "se_log_score",
+        "mixture_log_predictive_total",
+        "learning_rate",
+        "mu_spread",
+    ):
         assert var in dt.sample_stats
 
 
@@ -178,8 +191,10 @@ def test_include_log_likelihood_false_skips_group():
 
     assert "posterior" in dt
     assert "log_likelihood" not in dt
+    assert "mixture_log_predictive" not in dt
     assert "mean_log_score" not in dt.sample_stats
     assert "se_log_score" not in dt.sample_stats
+    assert "mixture_log_predictive_total" not in dt.sample_stats
 
 
 def test_multi_observed_rv_log_likelihood():
@@ -262,3 +277,125 @@ def test_datatree_kwargs_merges_coords_without_losing_draw():
     np.testing.assert_array_equal(dt.posterior.coords["step"].values, [0, 1])
     assert dt.posterior.attrs["sample_dims"] == ["draw", "chain"]
     np.testing.assert_array_equal(dt.observed_data.coords["obs"].values, ["x", "y"])
+
+
+def test_mixture_log_predictive_gaussian_closed_form():
+    """Mixture log predictive matches logsumexp over particles minus log p."""
+    y = np.array([0.5, -1.0])
+    sigma = 1.0
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=10.0)
+        pm.Normal("y", mu=mu, sigma=sigma, observed=y)
+
+    mapper = make_point_mapper(model)
+    n_particles = 2
+    flat_parts = [mapper.ravel({"mu": np.array([mu_val])}) for mu_val in (-2.0, 3.0)]
+    flat = np.stack(flat_parts, axis=0)
+    particles = flat[None, :, :]
+
+    dt = _pro_to_datatree(
+        particles,
+        model=model,
+        mapper=mapper,
+        tune=0,
+        learning_rate=1.0,
+    )
+
+    ll = dt.log_likelihood["y"].values
+    expected = logsumexp(ll, axis=1) - np.log(n_particles)
+    np.testing.assert_allclose(dt.mixture_log_predictive["y"].values, expected, rtol=1e-10)
+
+
+def test_mixture_log_predictive_total_matches_sum():
+    with pm.Model(coords={"obs": ["a", "b", "c"]}) as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=[0.1, -0.2, 0.3], dims="obs")
+
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=5,
+        tune=0,
+        step_size=5e-3,
+        random_seed=11,
+    )
+
+    expected_total = dt.mixture_log_predictive["y"].values.sum(axis=-1)
+    actual_total = dt.sample_stats["mixture_log_predictive_total"].isel(chain=0).values
+    np.testing.assert_allclose(actual_total, expected_total, rtol=1e-8)
+
+
+def test_mixture_log_predictive_not_equal_mean_log_score():
+    """Per-particle mean log score differs from mixture total when particles diverge."""
+    y = np.array([0.5, -1.0])
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=10.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=y)
+
+    mapper = make_point_mapper(model)
+    flat_parts = [mapper.ravel({"mu": np.array([mu_val])}) for mu_val in (-2.0, 3.0)]
+    flat = np.stack(flat_parts, axis=0)
+    particles = flat[None, :, :]
+
+    dt = _pro_to_datatree(
+        particles,
+        model=model,
+        mapper=mapper,
+        tune=0,
+        learning_rate=1.0,
+    )
+
+    mean_score = dt.sample_stats["mean_log_score"].isel(chain=0, draw=0).values
+    mixture_total = dt.sample_stats["mixture_log_predictive_total"].isel(chain=0, draw=0).values
+    assert not np.isclose(mean_score, mixture_total)
+
+
+def test_mixture_log_predictive_dims():
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(4))
+
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=6,
+        tune=2,
+        random_seed=6,
+    )
+
+    assert "chain" not in dt.mixture_log_predictive["y"].dims
+    assert dt.mixture_log_predictive.sizes["draw"] == dt.posterior.sizes["draw"]
+    assert dt.mixture_log_predictive.attrs["sample_dims"] == ["draw"]
+    np.testing.assert_array_equal(
+        dt.mixture_log_predictive.coords["draw"].values,
+        dt.posterior.coords["draw"].values,
+    )
+
+
+def test_multi_observed_rv_mixture_log_predictive():
+    y1 = np.array([0.1, -0.2])
+    y2 = np.array([0.3])
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y1", mu=mu, sigma=1.0, observed=y1)
+        pm.Normal("y2", mu=mu, sigma=1.0, observed=y2)
+
+    dt = sample_pro(
+        model=model,
+        n_particles=4,
+        n_steps=10,
+        tune=0,
+        random_seed=3,
+    )
+
+    assert "y1" in dt.mixture_log_predictive
+    assert "y2" in dt.mixture_log_predictive
+    expected_total = (
+        dt.mixture_log_predictive["y1"].values.sum()
+        + dt.mixture_log_predictive["y2"].values.sum()
+    )
+    actual_total = dt.sample_stats["mixture_log_predictive_total"].isel(chain=0).values.sum()
+    np.testing.assert_allclose(actual_total, expected_total, rtol=1e-8)

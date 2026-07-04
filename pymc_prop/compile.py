@@ -21,6 +21,9 @@ BatchedLogpScoreFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 BatchedGradFunc = Callable[[np.ndarray], np.ndarray]
 DriftFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 
+# Compile-time only: graph construction failures that trigger scan fallback.
+_VECTORIZE_FALLBACK_ERRORS = (TypeError, ValueError, AttributeError, NotImplementedError)
+
 
 def compile_observed_logp(model=None) -> PointFunc:
     """Elementwise observed logp; output shape ``(n_obs,)`` (not summed)."""
@@ -193,7 +196,7 @@ def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None =
             point_fn=False,
             on_unused_input="ignore",
         )
-    except Exception:  # vectorize path failed at graph build; use scan
+    except _VECTORIZE_FALLBACK_ERRORS:  # vectorize path failed at graph build; use scan
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=True)
         return model.compile_fn(
             inputs=[particles],
@@ -233,7 +236,7 @@ def compile_batched_prior_grad(
             point_fn=False,
             on_unused_input="ignore",
         )
-    except Exception:  # vectorize path failed at graph build; use scan
+    except _VECTORIZE_FALLBACK_ERRORS:  # vectorize path failed at graph build; use scan
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True
         )
@@ -383,7 +386,7 @@ def compile_drift_for_logscore(
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=False
         )
-    except Exception:  # vectorize path failed at graph build; use scan
+    except _VECTORIZE_FALLBACK_ERRORS:  # vectorize path failed at graph build; use scan
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=True)
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=True

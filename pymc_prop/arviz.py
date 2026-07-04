@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import pymc
 import pytensor.tensor as pt
+import xarray as xr
+from scipy.special import logsumexp
 from arviz_base import from_dict
-from arviz_base.base import make_attrs
+from arviz_base.base import dict_to_dataset, make_attrs
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.model import modelcontext
 from pytensor.graph.replace import graph_replace
@@ -18,9 +21,11 @@ from xarray import DataTree
 from pymc_prop.compile import compile_batched_observed_logp_score
 from pymc_prop.points import PointMapper, flat_to_value_vars
 
-# draw = retained index; chain = ensemble particles; step = simulation step
-_SAMPLE_DIMS = ["draw", "chain"]
+_PRO_SAMPLE_DIMS = ["draw", "chain"]
+_SAMPLE_DIMS = _PRO_SAMPLE_DIMS
+_MIXTURE_SAMPLE_DIMS = ["draw"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
+_VECTORIZE_FALLBACK_ERRORS = (TypeError, ValueError, AttributeError, NotImplementedError)
 
 
 def _particles_to_posterior(
@@ -128,7 +133,7 @@ def _compile_batched_logp_for_rv(model, mapper: PointMapper, rv) -> Any:
     particles = pt.matrix("particles")
     try:
         logp = _batched_logp_single_rv_graph(particles, model, mapper, rv, use_scan=False)
-    except Exception:
+    except _VECTORIZE_FALLBACK_ERRORS:
         logp = _batched_logp_single_rv_graph(particles, model, mapper, rv, use_scan=True)
     return model.compile_fn(
         inputs=[particles],
@@ -178,6 +183,38 @@ def _compute_log_likelihood(
     return log_likelihood
 
 
+def _compute_mixture_log_predictive(
+    log_likelihood: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Empirical mixture log predictive log p_{hat Q}(y) over uniform particle weights."""
+    mixture: dict[str, np.ndarray] = {}
+    for name, ll in log_likelihood.items():
+        ll = np.asarray(ll, dtype=float)
+        n_particles = ll.shape[1]
+        mixture[name] = logsumexp(ll, axis=1) - np.log(n_particles)
+    return mixture
+
+
+def _mixture_log_predictive_to_dataset(
+    mixture_log_predictive: dict[str, np.ndarray],
+    *,
+    coords: dict[str, Any],
+    dims: dict[str, list[str]],
+    attrs: dict[str, Any],
+) -> xr.Dataset:
+    """Build mixture log predictive dataset without a particle ``chain`` dimension."""
+    mixture_coords = {k: v for k, v in coords.items() if k != "chain"}
+    return dict_to_dataset(
+        mixture_log_predictive,
+        attrs=attrs,
+        coords=mixture_coords,
+        dims=dims,
+        sample_dims=_MIXTURE_SAMPLE_DIMS,
+        skip_event_dims=True,
+        inference_library=pymc,
+    )
+
+
 def _broadcast_draw_stat(values: np.ndarray, n_particles: int) -> np.ndarray:
     """Broadcast step-only diagnostics to the standard (draw, chain) layout."""
     values = np.asarray(values, dtype=float)
@@ -193,6 +230,7 @@ def _compute_sample_stats(
     learning_rate: float,
     *,
     fuse_stats: dict[str, np.ndarray] | None = None,
+    mixture_log_predictive: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
     """PrO-specific diagnostics derived from retained particle clouds."""
     n_retained, n_particles = particles.shape[:2]
@@ -222,6 +260,13 @@ def _compute_sample_stats(
     if fuse_stats:
         for name, values in fuse_stats.items():
             stats[name] = _broadcast_draw_stat(np.asarray(values, dtype=float), n_particles)
+
+    if mixture_log_predictive:
+        total = sum(
+            np.sum(np.asarray(arr, dtype=float), axis=tuple(range(1, arr.ndim)))
+            for arr in mixture_log_predictive.values()
+        )
+        stats["mixture_log_predictive_total"] = _broadcast_draw_stat(total, n_particles)
 
     return stats
 
@@ -256,9 +301,14 @@ def _attach_pro_coords(
     *,
     draw_coord: np.ndarray,
     step_coord: np.ndarray | None,
+    groups: Sequence[str] | None = None,
 ) -> None:
     """Attach PrO ``draw`` and ``step`` coords to groups with a draw dimension."""
-    for name in list(dt.children):
+    if groups is None:
+        groups = list(dt.children)
+    for name in groups:
+        if name not in dt.children:
+            continue
         node = dt[name]
         if "draw" not in node.dims:
             continue
@@ -266,6 +316,97 @@ def _attach_pro_coords(
         if step_coord is not None:
             ds = ds.assign_coords(step=("draw", step_coord))
         dt[name] = ds
+
+
+def _mixture_remix_forward_dataset(
+    grid: xr.Dataset,
+    *,
+    random_seed: int | None = None,
+) -> xr.Dataset:
+    """Remix a per-particle forward grid into draw-aligned mixture PPC draws.
+
+    For each retained draw index *d*, independently resample particle ``chain``
+    per observation element from ``grid.isel(draw=d)`` -- a marginal mixture at
+    each :math:`Q_t`. Output shape is ``(draw, *obs)`` with ``sample_dims=["draw"]`` 
+    and no ``chain`` dimension.
+    """
+    if grid.sizes.get("draw", 0) == 0 or grid.sizes.get("chain", 0) == 0:
+        return grid
+
+    n_draw = grid.sizes["draw"]
+    n_chain = grid.sizes["chain"]
+    obs_dims = [d for d in grid.dims if d not in _PRO_SAMPLE_DIMS]
+    target_shape = (n_draw,) + tuple(grid.sizes[d] for d in obs_dims)
+
+    rng = np.random.default_rng(random_seed)
+    random_chains = rng.integers(0, n_chain, size=target_shape)
+    indexing_dims = ["draw", *obs_dims]
+    chain_da = xr.DataArray(random_chains, dims=indexing_dims)
+    draw_da = xr.DataArray(
+        np.broadcast_to(np.arange(n_draw, dtype=int).reshape((-1,) + (1,) * len(obs_dims)), target_shape),
+        dims=indexing_dims,
+    )
+
+    final_dims = ("draw", *obs_dims)
+    remixed_vars: dict[str, tuple[tuple[str, ...], np.ndarray]] = {}
+    for name in grid.data_vars:
+        y_mixed = grid[name].isel(chain=chain_da, draw=draw_da)
+        remixed_vars[name] = (final_dims, y_mixed.values)
+
+    remixed_coords: dict[str, Any] = {
+        "draw": np.asarray(grid.coords["draw"].values, dtype=int),
+    }
+    for dim in obs_dims:
+        remixed_coords[dim] = (
+            grid.coords[dim].values
+            if dim in grid.coords
+            else np.arange(grid.sizes[dim], dtype=int)
+        )
+
+    attrs = make_attrs(inference_library=pymc, sample_dims=_MIXTURE_SAMPLE_DIMS)
+    return xr.Dataset(remixed_vars, coords=remixed_coords, attrs=attrs)
+
+
+def _forward_group_datatree(
+    remixed: xr.Dataset,
+    *,
+    predictions: bool,
+    posterior: xr.Dataset,
+) -> DataTree:
+    """Build a DataTree containing only the mixture-remixed forward group."""
+    if not remixed.data_vars:
+        return DataTree()
+
+    if "draw" in posterior.coords:
+        remixed = remixed.assign_coords(draw=posterior.coords["draw"])
+        if "step" in posterior.coords:
+            remixed = remixed.assign_coords(step=("draw", posterior.coords["step"].values))
+
+    group_name = "predictions" if predictions else "posterior_predictive"
+    out = DataTree()
+    out[group_name] = DataTree(name=group_name, dataset=remixed)
+    return out
+
+
+def _spawn_forward_seed(random_seed: int | None) -> int | None:
+    """Derive an independent seed for forward sampling."""
+    if random_seed is None:
+        return None
+    child = np.random.SeedSequence(random_seed).spawn(1)[0]
+    return int(child.generate_state(1, dtype=np.uint64)[0])
+
+
+def _spawn_forward_and_remix_seeds(
+    random_seed: int | None,
+) -> tuple[int | None, int | None]:
+    """Derive independent seeds for the forward grid and mixture remix."""
+    if random_seed is None:
+        return None, None
+    children = np.random.SeedSequence(random_seed).spawn(2)
+    return (
+        int(children[0].generate_state(1, dtype=np.uint64)[0]),
+        int(children[1].generate_state(1, dtype=np.uint64)[0]),
+    )
 
 
 def _pro_to_datatree(
@@ -308,10 +449,12 @@ def _pro_to_datatree(
         data["observed_data"] = _extract_observed_data(model)
 
     log_likelihood: dict[str, np.ndarray] = {}
+    mixture_log_predictive: dict[str, np.ndarray] = {}
     if include_log_likelihood and model.observed_RVs and n_retained > 0:
         log_likelihood = _compute_log_likelihood(particles, model, mapper)
         if log_likelihood:
             data["log_likelihood"] = log_likelihood
+            mixture_log_predictive = _compute_mixture_log_predictive(log_likelihood)
 
     if include_sample_stats and n_retained > 0:
         data["sample_stats"] = _compute_sample_stats(
@@ -320,9 +463,11 @@ def _pro_to_datatree(
             log_likelihood,
             learning_rate,
             fuse_stats=fuse_stats,
+            mixture_log_predictive=mixture_log_predictive or None,
         )
 
     pymc_attrs = make_attrs(inference_library=pymc, sample_dims=_SAMPLE_DIMS)
+    mixture_attrs = make_attrs(inference_library=pymc, sample_dims=_MIXTURE_SAMPLE_DIMS)
     group_attrs: dict[str, dict[str, Any]] = {
         "posterior": dict(pymc_attrs),
     }
@@ -342,4 +487,18 @@ def _pro_to_datatree(
 
     dt = from_dict(data, **kwargs)
     _attach_pro_coords(dt, draw_coord=draw_coord, step_coord=step_coord)
+    if mixture_log_predictive:
+        mixture_ds = _mixture_log_predictive_to_dataset(
+            mixture_log_predictive,
+            coords=merged_coords,
+            dims=merged_dims,
+            attrs=dict(mixture_attrs),
+        )
+        dt["mixture_log_predictive"] = DataTree(name="mixture_log_predictive", dataset=mixture_ds)
+        _attach_pro_coords(
+            dt,
+            draw_coord=draw_coord,
+            step_coord=step_coord,
+            groups=["mixture_log_predictive"],
+        )
     return dt
