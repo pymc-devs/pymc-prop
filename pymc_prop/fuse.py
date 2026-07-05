@@ -35,9 +35,9 @@ class FuseStepDiagnostics:
 
 @dataclass
 class FuseState:
-    """Mutable FUSE schedule state after bootstrap (Sharrock & Nemeth 2025, Sec. 5.1.1).
+    """Mutable FUSE schedule state after the initial step (Sharrock & Nemeth 2025, Sec. 5.1.1).
 
-    Created by :func:`fuse_bootstrap_step`. ``reference_half_step`` is the fixed
+    Created by :func:`fuse_initial_step`. ``reference_half_step`` is the fixed
     initial half-step cloud (:math:`x_{1/2}`). ``grad_energy`` accumulates mean
     squared **raw** drift (:math:`g_s^2`); ``r_bar`` tracks the running distance
     floor. ``learning_rate`` is not applied when accumulating ``grad_energy``.
@@ -61,7 +61,7 @@ def fuse_distance(
     return float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
 
 
-def fuse_bootstrap_step(
+def fuse_initial_step(
     particles: np.ndarray,
     wgf_grad: np.ndarray,
     prior_grad: np.ndarray,
@@ -149,13 +149,13 @@ def fuse_step_size(
 ) -> tuple[float, FuseState, FuseStepDiagnostics]:
     """Return adaptive step size, updated state, and per-step FUSE diagnostics.
 
-    Dispatches to :func:`fuse_bootstrap_step` when ``state`` is ``None``;
+    Dispatches to :func:`fuse_initial_step` when ``state`` is ``None``;
     otherwise :func:`fuse_adaptive_step`. Prefer calling those functions
     directly when the schedule phase should be explicit at the call site.
     """
     if state is None:
-        # t = 0 bootstrap (η_0, x_{1/2})
-        return fuse_bootstrap_step(
+        # t = 0 initial schedule step (η_0, x_{1/2})
+        return fuse_initial_step(
             particles, wgf_grad, prior_grad, learning_rate, r_eps
         )
     # t ≥ 1 adaptive update (η_t, r̄_t, G_t)

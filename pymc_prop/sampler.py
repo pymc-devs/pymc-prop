@@ -14,7 +14,7 @@ from pymc_prop.fuse import (
     FUSE_STEP_SIZE_STAT,
     FuseState,
     fuse_adaptive_step,
-    fuse_bootstrap_step,
+    fuse_initial_step,
 )
 from pymc_prop.particles import initialize_particles, time_step
 from pymc_prop.points import PointMapper
@@ -68,7 +68,7 @@ def run_sampler(
         batched_prior_grad_fn = compile_batched_prior_grad(mapper, model)
 
     use_fuse = step_size is None
-    # FUSE Sec. 5.1.1: None until bootstrap (t=0); then mutable schedule state
+    # FUSE Sec. 5.1.1: None until initial schedule step (t=0); then mutable state
     fuse_state: FuseState | None = None
 
     retained: List[np.ndarray] = []
@@ -85,7 +85,7 @@ def run_sampler(
         if use_fuse:
             if fuse_state is None:
                 # t = 0: η_0 = r_ε, freeze reference half-step x_{1/2}
-                eta, fuse_state, diag = fuse_bootstrap_step(
+                eta, fuse_state, diag = fuse_initial_step(
                     particles,
                     wgf_grad,
                     prior_grad,

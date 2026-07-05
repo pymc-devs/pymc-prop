@@ -13,7 +13,7 @@ from pymc_prop.fuse import (
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     fuse_adaptive_step,
-    fuse_bootstrap_step,
+    fuse_initial_step,
     fuse_distance,
     fuse_grad_energy,
     fuse_step_size,
@@ -80,8 +80,8 @@ def _simulate_fuse_pymc_helpers(
     trajectory = []
 
     wgf_grad = -_gaussian_target_drift(particles)
-    # t = 0 bootstrap, then Euler-Maruyama step
-    eta, fuse_state, _ = fuse_bootstrap_step(
+    # t = 0 initial schedule step, then Euler-Maruyama step
+    eta, fuse_state, _ = fuse_initial_step(
         particles, wgf_grad, prior_grad, learning_rate, r_eps
     )
     particles = time_step(
@@ -136,7 +136,7 @@ def test_fuse_raw_vs_scaled_learning_rate():
     scaled = scaled_drift(wgf_grad, prior_grad, learning_rate)
     assert not np.allclose(raw, scaled)
 
-    _, fuse_state, _ = fuse_bootstrap_step(
+    _, fuse_state, _ = fuse_initial_step(
         particles, wgf_grad, prior_grad, learning_rate, r_eps
     )
     eta, fuse_state, _ = fuse_adaptive_step(
@@ -155,8 +155,8 @@ def test_fuse_raw_vs_scaled_learning_rate():
     np.testing.assert_allclose(half, half_from_scaled)
 
 
-def test_fuse_step_size_dispatches_bootstrap_and_adaptive():
-    """Thin dispatcher matches explicit bootstrap then adaptive calls."""
+def test_fuse_step_size_dispatches_initial_and_adaptive():
+    """Thin dispatcher matches explicit initial then adaptive calls."""
     rng = np.random.default_rng(7)
     particles = rng.standard_normal((4, 2))
     wgf_grad = rng.standard_normal((4, 2))
@@ -164,26 +164,26 @@ def test_fuse_step_size_dispatches_bootstrap_and_adaptive():
     learning_rate = 1.0
     r_eps = 1e-5
 
-    eta_boot, state_boot, diag_boot = fuse_bootstrap_step(
+    eta_init, state_init, diag_init = fuse_initial_step(
         particles, wgf_grad, prior_grad, learning_rate, r_eps
     )
     eta_disp, state_disp, diag_disp = fuse_step_size(
         particles, wgf_grad, prior_grad, learning_rate, None, r_eps
     )
-    assert eta_boot == pytest.approx(eta_disp)
+    assert eta_init == pytest.approx(eta_disp)
     np.testing.assert_allclose(
-        state_boot.reference_half_step, state_disp.reference_half_step
+        state_init.reference_half_step, state_disp.reference_half_step
     )
-    assert state_boot.r_bar == pytest.approx(state_disp.r_bar)
-    assert state_boot.grad_energy == pytest.approx(state_disp.grad_energy)
-    assert diag_boot.step_size == pytest.approx(diag_disp.step_size)
-    assert diag_boot.gradient_energy == pytest.approx(diag_disp.gradient_energy)
-    assert diag_boot.half_step_distance_sq == pytest.approx(
+    assert state_init.r_bar == pytest.approx(state_disp.r_bar)
+    assert state_init.grad_energy == pytest.approx(state_disp.grad_energy)
+    assert diag_init.step_size == pytest.approx(diag_disp.step_size)
+    assert diag_init.gradient_energy == pytest.approx(diag_disp.gradient_energy)
+    assert diag_init.half_step_distance_sq == pytest.approx(
         diag_disp.half_step_distance_sq
     )
 
     eta_adapt, state_adapt, diag_adapt = fuse_adaptive_step(
-        particles, wgf_grad, prior_grad, learning_rate, state_boot, r_eps
+        particles, wgf_grad, prior_grad, learning_rate, state_init, r_eps
     )
     eta_disp2, state_disp2, diag_disp2 = fuse_step_size(
         particles, wgf_grad, prior_grad, learning_rate, state_disp, r_eps
