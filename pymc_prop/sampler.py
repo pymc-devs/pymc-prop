@@ -8,7 +8,6 @@ import numpy as np
 
 from pymc_prop.compile import compile_batched_prior_grad
 from pymc_prop.fuse import (
-    DEFAULT_R_EPS,
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     FUSE_STEP_SIZE_STAT,
@@ -31,7 +30,7 @@ def run_sampler(
     step_size: float | None,
     learning_rate: float,
     random_seed: int | None,
-    r_eps: float = DEFAULT_R_EPS,
+    r_eps: float = 1e-5,
     fuse_diagnostics: dict[str, list[float]] | None = None,
 ) -> np.ndarray:
     """Run the PrO particle simulation loop.
@@ -85,7 +84,7 @@ def run_sampler(
         if use_fuse:
             if fuse_state is None:
                 # t = 0: η_0 = r_ε, freeze reference half-step x_{1/2}
-                eta, fuse_state, diag = fuse_initial_step(
+                step_size, fuse_state, diag = fuse_initial_step(
                     particles,
                     wgf_grad,
                     prior_grad,
@@ -94,7 +93,7 @@ def run_sampler(
                 )
             else:
                 # t ≥ 1: η_t = r̄_t / sqrt(G_t), update r̄_t from half-step distances
-                eta, fuse_state, diag = fuse_adaptive_step(
+                step_size, fuse_state, diag = fuse_adaptive_step(
                     particles,
                     wgf_grad,
                     prior_grad,
@@ -106,11 +105,9 @@ def run_sampler(
                 fuse_diagnostics.setdefault(FUSE_GRADIENT_ENERGY_STAT, []).append(diag.gradient_energy)
                 fuse_diagnostics.setdefault(FUSE_HALF_STEP_DISTANCE_SQ_STAT, []).append(diag.half_step_distance_sq)
                 fuse_diagnostics.setdefault(FUSE_STEP_SIZE_STAT, []).append(diag.step_size)
-        else:
-            eta = step_size
 
         particles = time_step(
-            particles, prior_grad, wgf_grad, eta, learning_rate, rng
+            particles, prior_grad, wgf_grad, step_size, learning_rate, rng
         )
 
         if step >= tune:

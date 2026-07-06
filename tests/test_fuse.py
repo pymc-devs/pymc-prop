@@ -9,7 +9,6 @@ import pymc as pm
 import pytest
 
 from pymc_prop.fuse import (
-    DEFAULT_R_EPS,
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     fuse_adaptive_step,
@@ -206,7 +205,7 @@ def test_sample_pro_warns_when_r_eps_exceeds_default():
             n_steps=2,
             tune=0,
             step_size=None,
-            r_eps=DEFAULT_R_EPS * 10,
+            r_eps=1e-4,
             random_seed=0,
             include_log_likelihood=False,
         )
@@ -225,7 +224,7 @@ def test_sample_pro_no_r_eps_warning_at_default():
             n_steps=2,
             tune=0,
             step_size=None,
-            r_eps=DEFAULT_R_EPS,
+            r_eps=1e-5,
             random_seed=0,
             include_log_likelihood=False,
         )

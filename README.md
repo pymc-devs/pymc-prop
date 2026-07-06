@@ -48,11 +48,11 @@ with pm.Model() as model:
     dt = sample_pro(n_particles=32, n_steps=500, random_seed=0)
 ```
 
-`dt` is an ArviZ `DataTree` with `posterior`, `observed_data`, `log_likelihood`, and `sample_stats` groups. `draw` is a retained index; `step` stores the simulation step number; particles map to `chain`. For the final particle cloud, use `dt.posterior.isel(draw=-1)`. `n_steps` is the number of retained draws; the sampler runs `tune + n_steps` total simulation steps. Adjust `n_particles`, `n_steps`, `tune`, `step_size`, and `learning_rate` for your model. Pass `step_size=None` with optional `r_eps` (default `1e-5`) to enable the tuning-free FUSE adaptive step-size schedule (Sharrock & Nemeth 2025) instead of a fixed step size. Subsample with `dt.isel(draw=slice(None, None, k))` if you need fewer points in post-processing.
+`dt` is an ArviZ `DataTree` with `posterior`, `observed_data`, `log_likelihood`, and `sample_stats` groups. `draw` is a retained index; `step` stores the simulation step number; particles map to `chain`. For the final particle cloud, use `dt.posterior.isel(draw=-1)`. `n_steps` is the number of retained draws; the sampler runs `tune + n_steps` total simulation steps. Adjust `n_particles`, `n_steps`, `tune`, `learning_rate`, and optional `r_eps` (default `1e-5`) for your model. By default, `sample_pro` uses the tuning-free FUSE adaptive step-size schedule (Sharrock & Nemeth 2025); pass a positive `step_size` (e.g. `1e-3`) for a fixed Euler-Maruyama step instead. Subsample with `dt.isel(draw=slice(None, None, k))` if you need fewer points in post-processing.
 
 ## Tutorials
 
-The main walkthrough is [examples/bimodal_gaussian.ipynb](examples/bimodal_gaussian.ipynb): simulate a bimodal Gaussian mixture, fit a deliberately misspecified unimodal location model with `sample_pro` (FUSE adaptive step size via `step_size=None`), and inspect the PrO posterior predictive. We find that, since the true data-generating process can be recovered by a mixture over the model class, the PrO posterior recovers it exactly.
+The main walkthrough is [examples/bimodal_gaussian.ipynb](examples/bimodal_gaussian.ipynb): simulate a bimodal Gaussian mixture, fit a deliberately misspecified unimodal location model with `sample_pro` (FUSE adaptive step size by default), and inspect the PrO posterior predictive. We find that, since the true data-generating process can be recovered by a mixture over the model class, the PrO posterior recovers it exactly.
 
 ## Implementation
 
@@ -84,6 +84,7 @@ Only `scoring_rule="log"` is supported in this version.
 ## Further reading
 
 - McLatchie, Chérief-Abdellatif, Frazier & Knoblauch (2025). [*Predictively Oriented Posteriors*](https://arxiv.org/abs/2510.01915). [arXiv:2510.01915](https://arxiv.org/abs/2510.01915) — primary reference for theory and notation.
+- Sharrock & Nemeth (2025). [*Tuning-Free Sampling via Optimization on the Space of Probability Measures*](https://arxiv.org/abs/2510.25315). [arXiv:2510.25315](https://arxiv.org/abs/2510.25315) — FUSE adaptive step-size schedule (default in `sample_pro`).
 - [Yann McLatchie's blog tutorial](https://yannmclatchie.github.io/blog/posts/pro-tutorial/) — same WGF and particle picture in a misspecified Gaussian example; uses **MMD** and **JAX**. Helpful supplementary exposition.
 
 ## Development

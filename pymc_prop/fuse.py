@@ -8,9 +8,8 @@ import numpy as np
 
 from pymc_prop.particles import raw_drift, scaled_drift
 
-DEFAULT_R_EPS = 1e-5
 # Floor on cumulative gradient energy in the FUSE denominator (not r_eps).
-_GRAD_EPS = 1e-12
+_GRADIENT_ENERGY_FLOOR = 1e-12
 
 # Keys written to ``sample_stats`` when ``step_size=None``.
 FUSE_STEP_SIZE_STAT = "fuse_step_size"
@@ -126,7 +125,7 @@ def fuse_adaptive_step(
     state.grad_energy += g_inc  # G_t
 
     # η_t = r̄_t / sqrt(G_t)
-    step_size = state.r_bar / np.sqrt(state.grad_energy + _GRAD_EPS)
+    step_size = state.r_bar / np.sqrt(state.grad_energy + _GRADIENT_ENERGY_FLOOR)
     current_half_step = particles - step_size * scaled  # x_{s-1/2}
     d_next = fuse_distance(state.reference_half_step, current_half_step)  # d_s
     state.r_bar = max(state.r_bar, max(r_eps, d_next))  # r̄_t

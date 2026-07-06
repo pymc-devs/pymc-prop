@@ -18,7 +18,6 @@ from pymc_prop.arviz import (
     _pro_to_datatree,
     _spawn_forward_and_remix_seeds,
 )
-from pymc_prop.fuse import DEFAULT_R_EPS
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore, ScoringRule
@@ -109,9 +108,9 @@ def sample_pro(
     n_particles: int = 64,
     n_steps: int = 1000,
     tune: int = 200,
-    step_size: float | None = 1e-3,
+    step_size: float | None = None,
     learning_rate: float = 1.0,
-    r_eps: float = DEFAULT_R_EPS,
+    r_eps: float = 1e-5,
     random_seed: int | None = None,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
@@ -145,12 +144,11 @@ def sample_pro(
     tune
         Warmup simulation steps discarded before retention. Unlike
         ``pm.sample``'s ``tune``, this only controls which steps are retained —
-        it is not step-size adaptation. Pass ``step_size=None`` to enable the
-        tuning-free FUSE adaptive schedule (Sharrock & Nemeth 2025); ``r_eps``
-        sets the schedule floor when FUSE is active.
+        it is not step-size adaptation.
     step_size
-        Fixed Euler-Maruyama step size (default ``1e-3``). Pass ``None`` to
-        enable FUSE adaptive step sizes instead of a fixed ``η``.
+        Euler-Maruyama step size. Default ``None`` enables the tuning-free FUSE
+        adaptive schedule (Sharrock & Nemeth 2025). Pass a positive float
+        (e.g. ``1e-3``) for a fixed step size instead.
     r_eps
         FUSE schedule floor ``r_ε`` (default ``1e-5``). Used only when
         ``step_size=None``.
@@ -196,9 +194,9 @@ def sample_pro(
     if step_size is None:
         if r_eps <= 0:
             raise ValueError("r_eps must be positive when step_size is None (FUSE).")
-        if r_eps > DEFAULT_R_EPS:
+        if r_eps > 1e-5:
             warnings.warn(
-                f"r_eps={r_eps:g} is larger than the recommended default ({DEFAULT_R_EPS:g}). "
+                f"r_eps={r_eps:g} is larger than the recommended default (1e-5). "
                 "FUSE is typically less sensitive to an r_eps that is too small than one that "
                 "is too large. Inspect fuse_step_size traces and particle behaviour if the "
                 "schedule looks unstable.",
