@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import pymc as pm
 import pytest
@@ -191,45 +189,6 @@ def test_fuse_step_size_dispatches_initial_and_adaptive():
     assert state_adapt.r_bar == pytest.approx(state_disp2.r_bar)
     assert state_adapt.grad_energy == pytest.approx(state_disp2.grad_energy)
     assert diag_adapt.step_size == pytest.approx(diag_disp2.step_size)
-
-
-def test_sample_pro_warns_when_r_eps_exceeds_default():
-    with pm.Model() as model:
-        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
-        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
-
-    with pytest.warns(UserWarning, match="larger than the recommended default"):
-        sample_pro(
-            model=model,
-            n_particles=4,
-            n_steps=2,
-            tune=0,
-            step_size=None,
-            r_eps=1e-4,
-            random_seed=0,
-            include_log_likelihood=False,
-        )
-
-
-def test_sample_pro_no_r_eps_warning_at_default():
-    with pm.Model() as model:
-        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
-        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(3))
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", UserWarning)
-        sample_pro(
-            model=model,
-            n_particles=4,
-            n_steps=2,
-            tune=0,
-            step_size=None,
-            r_eps=1e-5,
-            random_seed=0,
-            include_log_likelihood=False,
-        )
-
-    assert not any("r_eps" in str(w.message) for w in caught)
 
 
 def test_run_sampler_fuse_rejects_nonpositive_r_eps():

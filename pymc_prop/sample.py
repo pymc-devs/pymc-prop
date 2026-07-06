@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Sequence
 from typing import Any, Literal
 
@@ -151,7 +150,8 @@ def sample_pro(
         (e.g. ``1e-3``) for a fixed step size instead.
     r_eps
         FUSE schedule floor ``r_ε`` (default ``1e-5``). Used only when
-        ``step_size=None``.
+        ``step_size=None``. Values much larger than the default can over-floor
+        the schedule; inspect ``fuse_step_size`` traces if particles look unstable.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
@@ -194,15 +194,6 @@ def sample_pro(
     if step_size is None:
         if r_eps <= 0:
             raise ValueError("r_eps must be positive when step_size is None (FUSE).")
-        if r_eps > 1e-5:
-            warnings.warn(
-                f"r_eps={r_eps:g} is larger than the recommended default (1e-5). "
-                "FUSE is typically less sensitive to an r_eps that is too small than one that "
-                "is too large. Inspect fuse_step_size traces and particle behaviour if the "
-                "schedule looks unstable.",
-                UserWarning,
-                stacklevel=2,
-            )
     elif step_size <= 0:
         raise ValueError("step_size must be positive.")
     if learning_rate <= 0:
