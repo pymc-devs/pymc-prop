@@ -87,6 +87,23 @@ def initialize_particles(
     )
 
 
+def raw_drift(wgf_grad: np.ndarray, prior_grad: np.ndarray) -> np.ndarray:
+    """Raw interaction drift for FUSE gradient-energy accumulation.
+
+    Returns ``wgf_grad - prior_grad`` (no ``learning_rate``). Used only for
+    :math:`g_s^2` in the FUSE denominator; particle motion uses
+    :func:`scaled_drift`.
+    """
+    return wgf_grad - prior_grad
+
+
+def scaled_drift(
+    wgf_grad: np.ndarray, prior_grad: np.ndarray, learning_rate: float
+) -> np.ndarray:
+    """Deterministic drift passed to :func:`time_step` (includes ``learning_rate``)."""
+    return learning_rate * wgf_grad - prior_grad
+
+
 def time_step(
     particles: np.ndarray,
     prior_grad: np.ndarray,

@@ -7,6 +7,14 @@ from typing import List
 import numpy as np
 
 from pymc_prop.compile import compile_batched_prior_grad
+from pymc_prop.fuse import (
+    FUSE_GRADIENT_ENERGY_STAT,
+    FUSE_HALF_STEP_DISTANCE_SQ_STAT,
+    FUSE_STEP_SIZE_STAT,
+    FuseState,
+    fuse_adaptive_step,
+    fuse_initial_step,
+)
 from pymc_prop.particles import initialize_particles, time_step
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
@@ -19,9 +27,11 @@ def run_sampler(
     n_particles: int,
     n_steps: int,
     tune: int,
-    step_size: float,
+    step_size: float | None,
     learning_rate: float,
     random_seed: int | None,
+    r_eps: float = 1e-5,
+    fuse_diagnostics: dict[str, list[float]] | None = None,
 ) -> np.ndarray:
     """Run the PrO particle simulation loop.
 
@@ -29,10 +39,18 @@ def run_sampler(
     n_params)``. The loop runs ``tune + n_steps`` Euler-Maruyama steps; each draw after
     warmup is an empirical particle measure at a retained simulation step.
 
-    Each step: compile drift, then :func:`~pymc_prop.particles.time_step`.
+    When ``step_size`` is ``None``, the tuning-free FUSE schedule (Sharrock &
+    Nemeth 2025) adapts ``η_t`` from raw and scaled drift fields; ``r_eps`` is
+    the schedule floor. FUSE state persists across the full ``tune + n_steps``
+    loop (no reset at the tune boundary).
     """
     if n_particles < 2:
         raise ValueError("n_particles must be at least 2.")
+    if step_size is None:
+        if r_eps <= 0:
+            raise ValueError("r_eps must be positive when step_size is None (FUSE).")
+    elif step_size <= 0:
+        raise ValueError("step_size must be positive.")
 
     rng = np.random.default_rng(random_seed)
 
@@ -48,6 +66,10 @@ def run_sampler(
     else:
         batched_prior_grad_fn = compile_batched_prior_grad(mapper, model)
 
+    use_fuse = step_size is None
+    # FUSE Sec. 5.1.1: None until initial schedule step (t=0); then mutable state
+    fuse_state: FuseState | None = None
+
     retained: List[np.ndarray] = []
 
     for step in range(tune + n_steps):
@@ -58,6 +80,31 @@ def run_sampler(
             wgf_grad = wgf_fn(particles)
             assert batched_prior_grad_fn is not None
             prior_grad = np.asarray(batched_prior_grad_fn(particles), dtype=float)
+
+        if use_fuse:
+            if fuse_state is None:
+                # t = 0: η_0 = r_ε, freeze reference half-step x_{1/2}
+                step_size, fuse_state, diag = fuse_initial_step(
+                    particles,
+                    wgf_grad,
+                    prior_grad,
+                    learning_rate,
+                    r_eps,
+                )
+            else:
+                # t ≥ 1: η_t = r̄_t / sqrt(G_t), update r̄_t from half-step distances
+                step_size, fuse_state, diag = fuse_adaptive_step(
+                    particles,
+                    wgf_grad,
+                    prior_grad,
+                    learning_rate,
+                    fuse_state,
+                    r_eps,
+                )
+            if fuse_diagnostics is not None and step >= tune:
+                fuse_diagnostics.setdefault(FUSE_GRADIENT_ENERGY_STAT, []).append(diag.gradient_energy)
+                fuse_diagnostics.setdefault(FUSE_HALF_STEP_DISTANCE_SQ_STAT, []).append(diag.half_step_distance_sq)
+                fuse_diagnostics.setdefault(FUSE_STEP_SIZE_STAT, []).append(diag.step_size)
 
         particles = time_step(
             particles, prior_grad, wgf_grad, step_size, learning_rate, rng

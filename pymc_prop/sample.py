@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Literal
 
+import numpy as np
 import pymc as pm
 from pymc.model import modelcontext
 from xarray import DataTree
@@ -106,8 +107,9 @@ def sample_pro(
     n_particles: int = 64,
     n_steps: int = 1000,
     tune: int = 200,
-    step_size: float = 1e-3,
+    step_size: float | None = None,
     learning_rate: float = 1.0,
+    r_eps: float = 1e-5,
     random_seed: int | None = None,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
@@ -140,8 +142,16 @@ def sample_pro(
         The sampler runs ``tune + n_steps`` total simulation steps.
     tune
         Warmup simulation steps discarded before retention. Unlike
-        ``pm.sample``'s ``tune``, there is no separate adaptation phase
-        during warmup yet.
+        ``pm.sample``'s ``tune``, this only controls which steps are retained —
+        it is not step-size adaptation.
+    step_size
+        Euler-Maruyama step size. Default ``None`` enables the tuning-free FUSE
+        adaptive schedule (Sharrock & Nemeth 2025). Pass a positive float
+        (e.g. ``1e-3``) for a fixed step size instead.
+    r_eps
+        FUSE schedule floor ``r_ε`` (default ``1e-5``). Used only when
+        ``step_size=None``. Values much larger than the default can over-floor
+        the schedule; inspect ``fuse_step_size`` traces if particles look unstable.
     learning_rate
         Scales the log-score WGF interaction in the Euler-Maruyama drift (the paper's
         :math:`\\lambda_n`; see Sec. ``Computation via Wasserstein Gradient Flows`` in
@@ -181,7 +191,10 @@ def sample_pro(
         raise ValueError("n_steps must be positive.")
     if tune < 0:
         raise ValueError("tune must be non-negative.")
-    if step_size <= 0:
+    if step_size is None:
+        if r_eps <= 0:
+            raise ValueError("r_eps must be positive when step_size is None (FUSE).")
+    elif step_size <= 0:
         raise ValueError("step_size must be positive.")
     if learning_rate <= 0:
         raise ValueError("learning_rate must be positive.")
@@ -196,6 +209,9 @@ def sample_pro(
 
     mapper = make_point_mapper(model)
 
+    fuse_diagnostics: dict[str, list[float]] | None = (
+        {} if step_size is None else None
+    )
     particles = run_sampler(
         model=model,
         mapper=mapper,
@@ -206,6 +222,14 @@ def sample_pro(
         step_size=step_size,
         learning_rate=learning_rate,
         random_seed=random_seed,
+        r_eps=r_eps,
+        fuse_diagnostics=fuse_diagnostics,
+    )
+
+    fuse_stats = (
+        {key: np.asarray(values, dtype=float) for key, values in fuse_diagnostics.items()}
+        if fuse_diagnostics is not None
+        else None
     )
 
     dt = _pro_to_datatree(
@@ -220,6 +244,7 @@ def sample_pro(
         include_observed_data=include_observed_data,
         include_sample_stats=include_sample_stats,
         datatree_kwargs=datatree_kwargs,
+        fuse_stats=fuse_stats,
     )
 
     return dt
