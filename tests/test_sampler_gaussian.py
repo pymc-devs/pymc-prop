@@ -118,3 +118,68 @@ def test_run_sampler_rejects_single_particle():
             learning_rate=1.0,
             random_seed=0,
         )
+
+
+def test_run_sampler_retention_shape_with_tune():
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(5))
+
+    mapper = make_point_mapper(model)
+    n_steps = 5
+    tune = 3
+    n_particles = 4
+
+    particles = run_sampler(
+        model=model,
+        mapper=mapper,
+        scoring_rule=LogScore(),
+        n_particles=n_particles,
+        n_steps=n_steps,
+        tune=tune,
+        step_size=5e-3,
+        learning_rate=1.0,
+        random_seed=42,
+    )
+
+    assert particles.shape == (n_steps, n_particles, mapper.ravel(model.initial_point()).size)
+    assert np.all(np.isfinite(particles))
+
+
+def test_logscore_run_sampler_compiles_drift_once(monkeypatch):
+    """LogScore must not also call compile_wgf (duplicate fused compile)."""
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.zeros(4))
+
+    mapper = make_point_mapper(model)
+    rule = LogScore()
+    counts = {"wgf": 0, "drift": 0}
+    orig_wgf = rule.compile_wgf
+    orig_drift = rule.compile_drift
+
+    def counting_wgf(*args, **kwargs):
+        counts["wgf"] += 1
+        return orig_wgf(*args, **kwargs)
+
+    def counting_drift(*args, **kwargs):
+        counts["drift"] += 1
+        return orig_drift(*args, **kwargs)
+
+    monkeypatch.setattr(rule, "compile_wgf", counting_wgf)
+    monkeypatch.setattr(rule, "compile_drift", counting_drift)
+
+    run_sampler(
+        model=model,
+        mapper=mapper,
+        scoring_rule=rule,
+        n_particles=4,
+        n_steps=2,
+        tune=0,
+        step_size=5e-3,
+        learning_rate=1.0,
+        random_seed=0,
+    )
+
+    assert counts["drift"] == 1
+    assert counts["wgf"] == 0

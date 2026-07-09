@@ -7,25 +7,21 @@ from typing import Any
 
 import numpy as np
 import pymc
-import pytensor.tensor as pt
 import xarray as xr
 from scipy.special import logsumexp
 from arviz_base import from_dict
 from arviz_base.base import dict_to_dataset, make_attrs
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.model import modelcontext
-from pytensor.graph.replace import graph_replace
-from pytensor.scan import scan
 from xarray import DataTree
 
-from pymc_prop.compile import compile_batched_observed_logp_score
-from pymc_prop.points import PointMapper, flat_to_value_vars
+from pymc_prop.compile import compile_batched_observed_logp_for_rv
+from pymc_prop.points import PointMapper
 
 _PRO_SAMPLE_DIMS = ["draw", "chain"]
 _SAMPLE_DIMS = _PRO_SAMPLE_DIMS
 _MIXTURE_SAMPLE_DIMS = ["draw"]
 _PROTECTED_DATATREE_KEYS = frozenset({"sample_dims"})
-_VECTORIZE_FALLBACK_ERRORS = (TypeError, ValueError, AttributeError, NotImplementedError)
 
 
 def _particles_to_posterior(
@@ -90,64 +86,15 @@ def _extract_observed_data(model) -> dict[str, np.ndarray]:
     return observed
 
 
-def _core_observed_logp_single_rv(
-    particle_flat: pt.TensorVariable,
-    model,
-    mapper: PointMapper,
-    rv,
-) -> pt.TensorVariable:
-    """Elementwise observed logp for one RV at one flat particle."""
-    value_vars = model.value_vars
-    mapped_value_vars = flat_to_value_vars(particle_flat, mapper.point_map_info)
-    replace = dict(zip(value_vars, mapped_value_vars, strict=True))
-    logp_terms = model.logp(vars=[rv], sum=False)
-    logp_vec = pt.flatten(pt.add(*logp_terms))
-    return graph_replace(logp_vec, replace=replace, strict=False)
-
-
-def _batched_logp_single_rv_graph(
-    particles: pt.TensorVariable,
-    model,
-    mapper: PointMapper,
-    rv,
-    *,
-    use_scan: bool,
-) -> pt.TensorVariable:
-    """Batch elementwise logp for one observed RV over particle rows."""
-    if use_scan:
-        logp, _ = scan(
-            fn=lambda particle: _core_observed_logp_single_rv(particle, model, mapper, rv),
-            sequences=[particles],
-        )
-        return logp
-
-    vec_fn = pt.vectorize(
-        lambda particle: _core_observed_logp_single_rv(particle, model, mapper, rv),
-        signature="(d)->(n)",
-    )
-    return vec_fn(particles)
-
-
-def _compile_batched_logp_for_rv(model, mapper: PointMapper, rv) -> Any:
-    """Compile batched elementwise logp for one observed RV; output (n_particles, n_obs_i)."""
-    particles = pt.matrix("particles")
-    try:
-        logp = _batched_logp_single_rv_graph(particles, model, mapper, rv, use_scan=False)
-    except _VECTORIZE_FALLBACK_ERRORS:
-        logp = _batched_logp_single_rv_graph(particles, model, mapper, rv, use_scan=True)
-    return model.compile_fn(
-        inputs=[particles],
-        outs=logp,
-        point_fn=False,
-        on_unused_input="ignore",
-    )
-
-
 def _eval_batched_logp_across_steps(
     batched_fn: Any,
     particles: np.ndarray,
 ) -> np.ndarray:
-    """Evaluate batched logp over all retained steps in one compiled call."""
+    """Evaluate batched logp over all retained steps in one compiled call.
+
+    Flattens ``(draw, chain)`` into one particle matrix so the batched fn runs
+    once per RV instead of once per retained draw.
+    """
     n_retained, n_particles, n_flat = particles.shape
     flat = particles.reshape(n_retained * n_particles, n_flat)
     out = batched_fn(flat)
@@ -171,14 +118,9 @@ def _compute_log_likelihood(
     observed_rvs = list(model.observed_RVs)
     log_likelihood: dict[str, np.ndarray] = {}
 
-    if len(observed_rvs) == 1:
-        rv = observed_rvs[0]
-        batched_fn = compile_batched_observed_logp_score(model, mapper)
-        log_likelihood[rv.name] = _eval_batched_logp_across_steps(batched_fn, particles)
-        return log_likelihood
-
     for rv in observed_rvs:
-        batched_fn = _compile_batched_logp_for_rv(model, mapper, rv)
+        # logp-only: groups store log p(y|θ), not ∇ log p; jacobian belongs on drift.
+        batched_fn = compile_batched_observed_logp_for_rv(model, mapper, rv)
         log_likelihood[rv.name] = _eval_batched_logp_across_steps(batched_fn, particles)
     return log_likelihood
 

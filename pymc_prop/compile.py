@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
@@ -17,6 +18,7 @@ from pymc_prop.points import PointMapper, flat_to_value_vars, require_unconstrai
 
 PointFunc = Callable[[dict[str, np.ndarray]], np.ndarray]
 FlatGradFunc = Callable[[np.ndarray], np.ndarray]
+BatchedLogpFunc = Callable[[np.ndarray], np.ndarray]
 BatchedLogpScoreFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 BatchedGradFunc = Callable[[np.ndarray], np.ndarray]
 DriftFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
@@ -25,14 +27,41 @@ DriftFunc = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray]]
 _VECTORIZE_FALLBACK_ERRORS = (TypeError, ValueError, AttributeError, NotImplementedError)
 
 
+def _observed_logp_vector(model, observed_rvs: Sequence) -> pt.TensorVariable:
+    """Elementwise observed logp vector (not yet mapped to flat particles)."""
+    logp_terms = model.logp(vars=observed_rvs, sum=False)
+    return pt.flatten(pt.add(*logp_terms))
+
+
+def _try_vectorize_then_scan(build: Callable[[bool], Any]) -> Any:
+    """Build a batched graph with vectorize, falling back to scan at compile time."""
+    try:
+        return build(use_scan=False)
+    except _VECTORIZE_FALLBACK_ERRORS:
+        return build(use_scan=True)
+
+
+def _compile_particle_batch(model, particles: pt.TensorVariable, outs: Any) -> Any:
+    """Compile a batched particle function."""
+    if isinstance(outs, tuple):
+        outs_list = list(outs)
+    else:
+        outs_list = outs
+    return model.compile_fn(
+        inputs=[particles],
+        outs=outs_list,
+        point_fn=False,
+        on_unused_input="ignore",
+    )
+
+
 def compile_observed_logp(model=None) -> PointFunc:
     """Elementwise observed logp; output shape ``(n_obs,)`` (not summed)."""
     model = modelcontext(model)
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
 
-    logp_terms = model.logp(vars=model.observed_RVs, sum=False)
-    logp_vec = pt.flatten(pt.add(*logp_terms))
+    logp_vec = _observed_logp_vector(model, model.observed_RVs)
 
     return model.compile_fn(inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore")
 
@@ -47,12 +76,7 @@ def compile_observed_score(model=None) -> PointFunc:
     require_unconstrained_free_rvs(model)
 
     value_vars = model.value_vars
-
-    logp_terms = model.logp(vars=model.observed_RVs, sum=False)
-    logp_vec = pt.flatten(pt.add(*logp_terms))
-    # ensure a 1-D vector of per-observation logp
-    logp_vec = pt.flatten(logp_vec)
-
+    logp_vec = _observed_logp_vector(model, model.observed_RVs)
     scores = jacobian(logp_vec, value_vars)
     return model.compile_fn(inputs=value_vars, outs=scores, on_unused_input="ignore")
 
@@ -92,6 +116,28 @@ def compile_flat_prior_grad(
     return flat_grad
 
 
+def _core_observed_logp(
+    particle_flat: pt.TensorVariable,
+    model,
+    mapper: PointMapper,
+    observed_rvs: Sequence,
+) -> pt.TensorVariable:
+    """Elementwise observed logp for one flat particle (no jacobian).
+
+    Split from :func:`_core_observed_logp_score` because post-sample groups
+    (``log_likelihood``, ``mixture_log_predictive``) only need
+    :math:`\\log p(y_i \\mid \\theta)`. Building the full observation
+    ``jacobian`` there duplicated drift-path work and inflated compile and eval
+    time with no change to the stored ArviZ arrays. Drift still uses
+    :func:`compile_batched_observed_logp_score` / :func:`compile_drift_for_logscore`.
+    """
+    value_vars = model.value_vars
+    mapped_value_vars = flat_to_value_vars(particle_flat, mapper.point_map_info)
+    replace = dict(zip(value_vars, mapped_value_vars, strict=True))
+    logp_vec = _observed_logp_vector(model, observed_rvs)
+    return graph_replace(logp_vec, replace=replace, strict=False)
+
+
 def _core_observed_logp_score(
     particle_flat: pt.TensorVariable, model, mapper: PointMapper
 ) -> tuple[pt.TensorVariable, pt.TensorVariable]:
@@ -100,9 +146,7 @@ def _core_observed_logp_score(
     mapped_value_vars = flat_to_value_vars(particle_flat, mapper.point_map_info)
     replace = dict(zip(value_vars, mapped_value_vars, strict=True))
 
-    logp_terms = model.logp(vars=model.observed_RVs, sum=False)
-    logp_vec = pt.flatten(pt.add(*logp_terms))
-    # score matrix: one row per observation
+    logp_vec = _observed_logp_vector(model, model.observed_RVs)
     score_mat = jacobian(logp_vec, value_vars)
     logp_vec, score_mat = graph_replace([logp_vec, score_mat], replace=replace, strict=False)
     return logp_vec, score_mat
@@ -121,6 +165,29 @@ def _core_prior_grad(
     prior_grad = graph_replace(prior_grad, replace=replace, strict=False)
     # flatten prior gradient vector to 1-D
     return pt.flatten(prior_grad)
+
+
+def _batched_observed_logp_graph(
+    particles: pt.TensorVariable,
+    model,
+    mapper: PointMapper,
+    observed_rvs: Sequence,
+    *,
+    use_scan: bool,
+) -> pt.TensorVariable:
+    """Batch elementwise observed logp over particles; signature ``(d)->(n)``."""
+    if use_scan:
+        logp, _ = scan(
+            fn=lambda particle: _core_observed_logp(particle, model, mapper, observed_rvs),
+            sequences=[particles],
+        )
+        return logp
+
+    vec_fn = pt.vectorize(
+        lambda particle: _core_observed_logp(particle, model, mapper, observed_rvs),
+        signature="(d)->(n)",
+    )
+    return vec_fn(particles)
 
 
 def _batched_observed_logp_score_graph(
@@ -171,6 +238,52 @@ def _batched_prior_grad_graph(
     return vec_fn(particles)
 
 
+def compile_batched_observed_logp(
+    model=None,
+    mapper: PointMapper | None = None,
+    *,
+    observed_rvs: Sequence | None = None,
+) -> BatchedLogpFunc:
+    """Compile batched elementwise observed logp (no jacobian).
+
+    Post-sample packaging path only; log-score drift uses
+    :func:`compile_batched_observed_logp_score`. Output shape
+    ``(n_particles, n_obs)``. Uses vectorized batching when possible; otherwise
+    ``scan`` at compile time.
+    """
+    model = modelcontext(model)
+    if mapper is None:
+        raise ValueError("`mapper` is required for batched compilation.")
+    if observed_rvs is None:
+        observed_rvs = model.observed_RVs
+    if not observed_rvs:
+        raise ValueError("Model has no observed variables.")
+
+    particles = pt.matrix("particles")
+
+    def build(use_scan: bool) -> pt.TensorVariable:
+        return _batched_observed_logp_graph(
+            particles, model, mapper, observed_rvs, use_scan=use_scan
+        )
+
+    outs = _try_vectorize_then_scan(build)
+    return _compile_particle_batch(model, particles, outs)
+
+
+def compile_batched_observed_logp_for_rv(
+    model=None,
+    mapper: PointMapper | None = None,
+    rv=None,
+) -> BatchedLogpFunc:
+    """Compile batched elementwise logp for one observed RV."""
+    model = modelcontext(model)
+    if mapper is None:
+        raise ValueError("`mapper` is required for batched compilation.")
+    if rv is None:
+        raise ValueError("`rv` is required.")
+    return compile_batched_observed_logp(model, mapper, observed_rvs=[rv])
+
+
 def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None = None) -> BatchedLogpScoreFunc:
     """Compile batched elementwise observed logp and score.
 
@@ -185,25 +298,12 @@ def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None =
         raise ValueError("Predictive score requires continuous model parameters.")
 
     particles = pt.matrix("particles")
-    # Compile-time only: batch particle rows with pt.vectorize. If graph construction
-    # fails (often flat_to_value_vars reshapes in the logp/score subgraph), rebuild
-    # with scan over rows (slower, identical output shapes).
-    try:
-        logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=False)
-        return model.compile_fn(
-            inputs=[particles],
-            outs=[logp, score],
-            point_fn=False,
-            on_unused_input="ignore",
-        )
-    except _VECTORIZE_FALLBACK_ERRORS:  # vectorize path failed at graph build; use scan
-        logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=True)
-        return model.compile_fn(
-            inputs=[particles],
-            outs=[logp, score],
-            point_fn=False,
-            on_unused_input="ignore",
-        )
+
+    def build(use_scan: bool) -> tuple[pt.TensorVariable, pt.TensorVariable]:
+        return _batched_observed_logp_score_graph(particles, model, mapper, use_scan=use_scan)
+
+    outs = _try_vectorize_then_scan(build)
+    return _compile_particle_batch(model, particles, outs)
 
 
 def compile_batched_prior_grad(
@@ -223,29 +323,14 @@ def compile_batched_prior_grad(
         raise ValueError("Model has no free random variables.")
 
     particles = pt.matrix("particles")
-    # Compile-time only: batch particle rows with pt.vectorize. If graph construction
-    # fails (often flat_to_value_vars reshapes in the logp/score subgraph), rebuild
-    # with scan over rows (slower, identical output shapes).
-    try:
-        prior_grad = _batched_prior_grad_graph(
-            particles, model, mapper, jacobian_terms=jacobian, use_scan=False
+
+    def build(use_scan: bool) -> pt.TensorVariable:
+        return _batched_prior_grad_graph(
+            particles, model, mapper, jacobian_terms=jacobian, use_scan=use_scan
         )
-        return model.compile_fn(
-            inputs=[particles],
-            outs=prior_grad,
-            point_fn=False,
-            on_unused_input="ignore",
-        )
-    except _VECTORIZE_FALLBACK_ERRORS:  # vectorize path failed at graph build; use scan
-        prior_grad = _batched_prior_grad_graph(
-            particles, model, mapper, jacobian_terms=jacobian, use_scan=True
-        )
-        return model.compile_fn(
-            inputs=[particles],
-            outs=prior_grad,
-            point_fn=False,
-            on_unused_input="ignore",
-        )
+
+    outs = _try_vectorize_then_scan(build)
+    return _compile_particle_batch(model, particles, outs)
 
 
 def compile_drift_for_logscore(
@@ -376,21 +461,15 @@ def compile_drift_for_logscore(
     require_unconstrained_free_rvs(model)
 
     particles = pt.matrix("particles")  # compile input (p, d): one row per particle in flat value_vars space
-    # Compile-time only: batch particle rows with pt.vectorize. If graph construction
-    # fails (often flat_to_value_vars reshapes in the logp/score subgraph), rebuild
-    # with scan over rows (slower, identical output shapes).
-    try:
-        # logp: p_{ϑ^{(j)}}(x_i); score: ∇_ϑ log p(y_i|ϑ^{(j)}); prior_grad: ∇_ϑ log π 
-        # per particle: log p(y_i), score rows, log prior gradient
-        logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=False)
+
+    def build(use_scan: bool) -> tuple[pt.TensorVariable, pt.TensorVariable, pt.TensorVariable]:
+        logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=use_scan)
         prior_grad = _batched_prior_grad_graph(
-            particles, model, mapper, jacobian_terms=jacobian, use_scan=False
+            particles, model, mapper, jacobian_terms=jacobian, use_scan=use_scan
         )
-    except _VECTORIZE_FALLBACK_ERRORS:  # vectorize path failed at graph build; use scan
-        logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=True)
-        prior_grad = _batched_prior_grad_graph(
-            particles, model, mapper, jacobian_terms=jacobian, use_scan=True
-        )
+        return logp, score, prior_grad
+
+    logp, score, prior_grad = _try_vectorize_then_scan(build)
 
     # subtract particle-wise max before exponentiating to prevent overflow/underflow
     logp_max = pt.max(logp, axis=0, keepdims=True)

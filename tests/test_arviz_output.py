@@ -1,11 +1,13 @@
 import numpy as np
 import pymc as pm
 import pytest
+import pytensor.tensor as pt
 from arviz_base import extract
 from scipy.special import logsumexp
 from xarray import DataTree
 
 from pymc_prop.arviz import _pro_to_datatree
+from pymc_prop.compile import compile_observed_logp
 from pymc_prop.points import make_point_mapper
 from pymc_prop.sample import sample_pro
 from pymc_prop.sampler import run_sampler
@@ -206,18 +208,46 @@ def test_multi_observed_rv_log_likelihood():
         pm.Normal("y1", mu=mu, sigma=1.0, observed=y1)
         pm.Normal("y2", mu=mu, sigma=1.0, observed=y2)
 
-    dt = sample_pro(
+    mapper = make_point_mapper(model)
+    particles = run_sampler(
         model=model,
+        mapper=mapper,
+        scoring_rule=LogScore(),
         n_particles=4,
-        n_steps=10,
+        n_steps=3,
         tune=0,
+        step_size=5e-3,
+        learning_rate=1.0,
         random_seed=3,
+    )
+    dt = _pro_to_datatree(
+        particles,
+        model=model,
+        mapper=mapper,
+        tune=0,
+        learning_rate=1.0,
     )
 
     assert "y1" in dt.log_likelihood
     assert "y2" in dt.log_likelihood
     assert dt.log_likelihood["y1"].shape[-1] == 2
     assert dt.log_likelihood["y2"].shape[-1] == 1
+
+    # Pointwise parity vs per-RV point compiles (logp-only packaging path).
+    per_rv_fns = {}
+    for rv in model.observed_RVs:
+        logp_terms = model.logp(vars=[rv], sum=False)
+        logp_vec = pt.flatten(pt.add(*logp_terms))
+        per_rv_fns[rv.name] = model.compile_fn(
+            inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore"
+        )
+    for draw_idx in range(particles.shape[0]):
+        for chain_idx in range(particles.shape[1]):
+            point = mapper.unravel(particles[draw_idx, chain_idx])
+            for name, fn in per_rv_fns.items():
+                expected = np.asarray(fn(point), dtype=float).reshape(-1)
+                actual = dt.log_likelihood[name].isel(draw=draw_idx, chain=chain_idx).values
+                np.testing.assert_allclose(actual, expected, rtol=1e-8, atol=1e-8)
 
 
 def test_pro_to_datatree_direct_from_sampler():
@@ -251,6 +281,43 @@ def test_pro_to_datatree_direct_from_sampler():
     per_particle = np.sum(dt.log_likelihood["y"].values, axis=-1)
     expected_se = np.std(per_particle, axis=1, ddof=1) / np.sqrt(4)
     np.testing.assert_allclose(dt.sample_stats["se_log_score"].isel(chain=0).values, expected_se, rtol=1e-8)
+
+
+def test_single_rv_log_likelihood_matches_compile_observed_logp():
+    y = np.array([0.1, -0.2, 0.3])
+
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=y)
+
+    mapper = make_point_mapper(model)
+    particles = run_sampler(
+        model=model,
+        mapper=mapper,
+        scoring_rule=LogScore(),
+        n_particles=4,
+        n_steps=3,
+        tune=0,
+        step_size=5e-3,
+        learning_rate=1.0,
+        random_seed=9,
+    )
+
+    dt = _pro_to_datatree(
+        particles,
+        model=model,
+        mapper=mapper,
+        tune=0,
+        learning_rate=1.0,
+    )
+
+    logp_fn = compile_observed_logp(model)
+    for draw_idx in range(particles.shape[0]):
+        for chain_idx in range(particles.shape[1]):
+            point = mapper.unravel(particles[draw_idx, chain_idx])
+            expected = np.asarray(logp_fn(point), dtype=float).reshape(-1)
+            actual = dt.log_likelihood["y"].isel(draw=draw_idx, chain=chain_idx).values
+            np.testing.assert_allclose(actual, expected, rtol=1e-8, atol=1e-8)
 
 
 def test_datatree_kwargs_merges_coords_without_losing_draw():
