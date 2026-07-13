@@ -57,13 +57,15 @@ def run_sampler(
     # Sec. 5: particles in unconstrained value_vars space
     particles = initialize_particles(model, mapper, n_particles, rng)
 
-    wgf_fn = scoring_rule.compile_wgf(model, mapper)
+    # LogScore: compile_drift once (fused wgf+prior). Do not also call compile_wgf --
+    # that rebuilds the same fused graph and discards prior_grad.
+    wgf_fn = None
     batched_prior_grad_fn = None
     drift_fn = None
     if isinstance(scoring_rule, LogScore):
-        # fused log-score path: one compiled call per step
         drift_fn = scoring_rule.compile_drift(model, mapper)
     else:
+        wgf_fn = scoring_rule.compile_wgf(model, mapper)
         batched_prior_grad_fn = compile_batched_prior_grad(mapper, model)
 
     use_fuse = step_size is None
@@ -77,6 +79,7 @@ def run_sampler(
         if drift_fn is not None:
             wgf_grad, prior_grad = drift_fn(particles)
         else:
+            assert wgf_fn is not None
             wgf_grad = wgf_fn(particles)
             assert batched_prior_grad_fn is not None
             prior_grad = np.asarray(batched_prior_grad_fn(particles), dtype=float)

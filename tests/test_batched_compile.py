@@ -5,6 +5,8 @@ import pytensor.tensor as pt
 from typing import cast
 
 from pymc_prop.compile import (
+    compile_batched_observed_logp,
+    compile_batched_observed_logp_for_rv,
     compile_batched_observed_logp_score,
     compile_batched_prior_grad,
     compile_observed_logp,
@@ -137,3 +139,57 @@ def test_batched_observed_logp_score_handles_mixed_shape_particles():
         score_row = np.asarray(compile_observed_score(model)(point), dtype=float)
         np.testing.assert_allclose(logp_batched[row_idx], logp_row, rtol=1e-8, atol=1e-8)
         np.testing.assert_allclose(score_batched[row_idx], score_row, rtol=1e-8, atol=1e-8)
+
+
+def test_batched_observed_logp_matches_loop():
+    rng = np.random.default_rng(321)
+    y = rng.normal(0.0, 1.0, size=10)
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        log_sigma = pm.Normal("log_sigma", mu=0.0, sigma=1.0)
+        sigma = pm.Deterministic("sigma", pt.exp(log_sigma))
+        pm.Normal("y", mu=mu, sigma=sigma, observed=y)
+
+    mapper = make_point_mapper(model)
+    logp_fn = compile_observed_logp(model)
+    batched_fn = compile_batched_observed_logp(model, mapper)
+
+    base = mapper.ravel(mapper.start_point)
+    particles = base[None, :] + 0.1 * rng.standard_normal((5, base.size))
+    logp_batched = batched_fn(particles)
+
+    logp_loop = []
+    for particle in particles:
+        point = mapper.unravel(particle)
+        logp_loop.append(np.asarray(logp_fn(point), dtype=float).reshape(-1))
+
+    np.testing.assert_allclose(logp_batched, np.stack(logp_loop, axis=0), rtol=1e-8, atol=1e-8)
+
+
+def test_batched_observed_logp_for_rv_matches_loop():
+    y1 = np.array([0.1, -0.2])
+    y2 = np.array([0.3])
+    with pm.Model() as model:
+        mu = pm.Normal("mu", mu=0.0, sigma=1.0)
+        pm.Normal("y1", mu=mu, sigma=1.0, observed=y1)
+        pm.Normal("y2", mu=mu, sigma=1.0, observed=y2)
+
+    mapper = make_point_mapper(model)
+    rng = np.random.default_rng(55)
+    base = mapper.ravel(mapper.start_point)
+    particles = base[None, :] + 0.05 * rng.standard_normal((4, base.size))
+
+    for rv in model.observed_RVs:
+        batched_fn = compile_batched_observed_logp_for_rv(model, mapper, rv)
+        logp_terms = model.logp(vars=[rv], sum=False)
+        logp_vec = pt.flatten(pt.add(*logp_terms))
+        point_fn = model.compile_fn(inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore")
+
+        logp_loop = []
+        for particle in particles:
+            point = mapper.unravel(particle)
+            logp_loop.append(np.asarray(point_fn(point), dtype=float).reshape(-1))
+
+        np.testing.assert_allclose(
+            batched_fn(particles), np.stack(logp_loop, axis=0), rtol=1e-8, atol=1e-8
+        )
