@@ -29,17 +29,41 @@ def _particles_to_posterior(
     model,
     mapper: PointMapper,
 ) -> dict[str, np.ndarray]:
-    """Split flat particles into named free-RV arrays with shape (draw, chain, *event)."""
+    """Split flat dual particles into named free-RV arrays ``(draw, chain, *event)``.
+
+    Applies ``transform.backward`` so posterior keys are free-RV names with
+    constrained (primal) values when transforms are present.
+    """
     if particles.ndim != 3:
         raise ValueError(
             f"particles must be 3-D (n_retained, n_particles, flat); got shape {particles.shape}."
         )
 
-    free_names = {rv.name for rv in model.free_RVs}
     n_retained, n_particles, n_flat = particles.shape
     posterior: dict[str, np.ndarray] = {}
-    offset = 0
 
+    if mapper.slices:
+        covered = 0
+        for sl in mapper.slices:
+            if sl.offset + sl.size > n_flat:
+                raise ValueError(
+                    f"slice for {sl.value_name!r} exceeds flat particle width {n_flat}."
+                )
+            slab = particles[..., sl.offset : sl.offset + sl.size]
+            primal = mapper.backward_slab(slab, sl)
+            posterior[sl.free_name] = np.asarray(
+                primal.reshape((n_retained, n_particles, *sl.shape)), dtype=float
+            )
+            covered = sl.offset + sl.size
+        if covered != n_flat:
+            raise ValueError(
+                f"point_map_info covers {covered} flat dims but particles have width {n_flat}."
+            )
+        return posterior
+
+    # Fallback when slices were not populated (should not happen via make_point_mapper).
+    free_names = {rv.name for rv in model.free_RVs}
+    offset = 0
     for name, shape, size, _dtype in mapper.point_map_info:
         if name not in free_names:
             offset += size

@@ -29,7 +29,8 @@ class LogScore(ScoringRule):
     """Log-score scoring rule for PrO particle sampling.
 
     Uses :func:`~pymc_prop.compile.compile_drift_for_logscore`. Requires
-    continuous ``model.value_vars`` and at least two particles.
+    continuous ``model.value_vars`` and at least two particles. Elementwise
+    transforms are supported via mirror WGF; simplex maps are rejected.
 
     :meth:`compile_drift` returns ``(wgf_grad, prior_grad)`` per time step.
     :meth:`compile_wgf` returns the interaction term only.

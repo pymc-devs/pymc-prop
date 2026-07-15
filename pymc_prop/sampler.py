@@ -54,7 +54,6 @@ def run_sampler(
 
     rng = np.random.default_rng(random_seed)
 
-    # Sec. 5: particles in unconstrained value_vars space
     particles = initialize_particles(model, mapper, n_particles, rng)
 
     # LogScore: compile_drift once (fused wgf+prior). Do not also call compile_wgf --
@@ -75,7 +74,6 @@ def run_sampler(
     retained: List[np.ndarray] = []
 
     for step in range(tune + n_steps):
-        # compile_drift_for_logscore -> time_step
         if drift_fn is not None:
             wgf_grad, prior_grad = drift_fn(particles)
         else:
@@ -110,7 +108,7 @@ def run_sampler(
                 fuse_diagnostics.setdefault(FUSE_STEP_SIZE_STAT, []).append(diag.step_size)
 
         particles = time_step(
-            particles, prior_grad, wgf_grad, step_size, learning_rate, rng
+            particles, prior_grad, wgf_grad, step_size, learning_rate, rng, mapper
         )
 
         if step >= tune:

@@ -111,13 +111,25 @@ def time_step(
     step_size: float,
     learning_rate: float,
     rng: np.random.Generator,
+    mapper: PointMapper | None = None,
 ) -> np.ndarray:
     """Advance particles one discrete-time step along the log-score WGF.
 
     ``learning_rate`` is :math:`\\lambda_n`, ``step_size`` is :math:`\\varepsilon`;
-    drift comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`.
+    drift comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`
+    (primal :math:`\\nabla_\\theta` laid out in dual flat coordinates).
+
+    Diffusion uses mirror noise
+    :math:`\\sigma(y)=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det}(y))` when
+    ``mapper`` has transforms; identity coordinates keep ``σ ≡ 1`` (same as
+    isotropic Euler-Maruyama).
     """
-    # drift = λ_n · wgf_grad − prior_grad
+    # drift = λ_n · wgf_grad − prior_grad  (primal ∇_θ; particles are dual y)
     drift = learning_rate * wgf_grad - prior_grad
-    noise = np.sqrt(2.0 * step_size) * rng.standard_normal(size=particles.shape)
+    xi = rng.standard_normal(size=particles.shape)
+    if mapper is None:
+        noise_scale = 1.0
+    else:
+        noise_scale = mapper.noise_scale(particles)
+    noise = np.sqrt(2.0 * step_size) * noise_scale * xi
     return particles - step_size * drift + noise

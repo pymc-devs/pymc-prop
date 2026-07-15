@@ -120,12 +120,16 @@ def sample_pro(
 ) -> DataTree:
     """Run the PrO particle sampler on a PyMC model.
 
-    Free RVs must be native unconstrained; reparameterize manually for now.
+    Free RVs may be unconstrained or use elementwise PyMC transforms
+    (``LogTransform``, ``LogOddsTransform``, ``Interval``). Coupled maps
+    (e.g. simplex / Dirichlet) are not supported yet. Particles evolve in dual
+    ``value_vars`` coordinates with mirror-scaled diffusion (Gu & Kim 2026).
 
     Returns an ArviZ :class:`xarray.DataTree` with ``posterior``,
     ``observed_data``, ``log_likelihood``, ``mixture_log_predictive``, and
     ``sample_stats`` groups. Retained steps map to ``draw``; simulation step
     numbers are in the ``step`` coordinate; particles map to ``chain``.
+    Posterior values are packed under free-RV names (primal / constrained).
 
     The ``mixture_log_predictive`` group holds :math:`\\log p_{\\hat Q}(y_i)` at
     observed data under the empirical particle mixture

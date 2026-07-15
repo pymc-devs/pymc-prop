@@ -13,7 +13,12 @@ from pytensor.scan import scan
 from pymc.model import modelcontext
 from pymc.pytensorf import gradient, jacobian
 
-from pymc_prop.points import PointMapper, flat_to_value_vars, require_unconstrained_free_rvs
+from pymc_prop.points import (
+    PointMapper,
+    flat_to_value_vars,
+    primal_scale_graph,
+    require_mirror_compatible_transforms,
+)
 
 
 PointFunc = Callable[[dict[str, np.ndarray]], np.ndarray]
@@ -67,13 +72,17 @@ def compile_observed_logp(model=None) -> PointFunc:
 
 
 def compile_observed_score(model=None) -> PointFunc:
-    """Per-observation score rows via ``jacobian``; shape ``(n_obs, n_params)``."""
+    """Per-observation score rows via ``jacobian``; shape ``(n_obs, n_params)``.
+
+    Returns :math:`\\nabla_y` w.r.t. dual ``value_vars``. For mirror EM drift
+    use :func:`compile_drift_for_logscore`.
+    """
     model = modelcontext(model)
     if not model.observed_RVs:
         raise ValueError("Model has no observed variables.")
     if model.discrete_value_vars:
         raise ValueError("Predictive score requires continuous model parameters.")
-    require_unconstrained_free_rvs(model)
+    require_mirror_compatible_transforms(model)
 
     value_vars = model.value_vars
     logp_vec = _observed_logp_vector(model, model.observed_RVs)
@@ -81,14 +90,26 @@ def compile_observed_score(model=None) -> PointFunc:
     return model.compile_fn(inputs=value_vars, outs=scores, on_unused_input="ignore")
 
 
-def compile_prior_gradient(model=None, *, jacobian: bool = True) -> PointFunc:
-    """Compile prior score gradient in unconstrained value-var space."""
+def compile_prior_gradient(model=None, *, jacobian: bool | None = None) -> PointFunc:
+    """Compile prior score gradient w.r.t. dual ``value_vars`` (:math:`\\nabla_y`).
+
+    When free RVs use elementwise transforms, default ``jacobian=False`` (mirror
+    MLD constrained-space potential). For particle-step prior drift use
+    :func:`compile_flat_prior_grad`, :func:`compile_batched_prior_grad`, or
+    :func:`compile_drift_for_logscore`.
+    """
     model = modelcontext(model)
     if model.discrete_value_vars:
         raise ValueError("Prior gradient requires continuous value variables.")
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
-    require_unconstrained_free_rvs(model)
+    require_mirror_compatible_transforms(model)
+
+    has_transforms = any(
+        model.rvs_to_transforms.get(rv) is not None for rv in model.free_RVs
+    )
+    if jacobian is None:
+        jacobian = not has_transforms
 
     # prior term: free RVs only (not the joint logp)
     logp_prior = model.logp(vars=model.free_RVs, jacobian=jacobian, sum=True)
@@ -99,19 +120,25 @@ def compile_prior_gradient(model=None, *, jacobian: bool = True) -> PointFunc:
     )
 
 
-def compile_prior_grad(model=None, *, jacobian: bool = True) -> PointFunc:
+def compile_prior_grad(model=None, *, jacobian: bool | None = None) -> PointFunc:
     """Alias for :func:`compile_prior_gradient`."""
     return compile_prior_gradient(model, jacobian=jacobian)
 
 
 def compile_flat_prior_grad(
-    mapper: PointMapper, model=None, *, jacobian: bool = True
+    mapper: PointMapper, model=None, *, jacobian: bool | None = None
 ) -> FlatGradFunc:
-    """Wrap the prior gradient as a function of flat particle vectors."""
+    """Prior gradient on a flat dual particle for :func:`~pymc_prop.particles.time_step`.
+
+    Applies :meth:`~pymc_prop.points.PointMapper.primal_scale` under transforms.
+    """
     grad_fn = compile_prior_gradient(model, jacobian=jacobian)
 
     def flat_grad(particle: np.ndarray) -> np.ndarray:
-        return np.asarray(grad_fn(mapper.unravel(particle)), dtype=float)
+        dual = np.asarray(grad_fn(mapper.unravel(particle)), dtype=float)
+        if not mapper.has_transforms:
+            return dual
+        return dual * mapper.primal_scale(particle)
 
     return flat_grad
 
@@ -159,11 +186,9 @@ def _core_prior_grad(
     value_vars = model.value_vars
     mapped_value_vars = flat_to_value_vars(particle_flat, mapper.point_map_info)
     replace = dict(zip(value_vars, mapped_value_vars, strict=True))
-    # log prior gradient (prior term)
     logp_prior = model.logp(vars=model.free_RVs, jacobian=jacobian_terms, sum=True)
     prior_grad = gradient(logp_prior, value_vars)
     prior_grad = graph_replace(prior_grad, replace=replace, strict=False)
-    # flatten prior gradient vector to 1-D
     return pt.flatten(prior_grad)
 
 
@@ -285,7 +310,7 @@ def compile_batched_observed_logp_for_rv(
 
 
 def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None = None) -> BatchedLogpScoreFunc:
-    """Compile batched elementwise observed logp and score.
+    """Compile batched elementwise observed logp and dual score (:math:`\\nabla_y`).
 
     Uses vectorized batching when possible; otherwise ``scan`` at compile time.
     """
@@ -310,24 +335,32 @@ def compile_batched_prior_grad(
     mapper: PointMapper,
     model=None,
     *,
-    jacobian: bool = True,
+    jacobian: bool | None = None,
 ) -> BatchedGradFunc:
-    """Compile batched prior score gradients.
+    """Compile batched prior gradients for particle steps (primal under transforms).
 
     Uses vectorized batching when possible; otherwise ``scan`` at compile time.
+    When ``jacobian`` is ``None``, defaults to ``False`` under transforms
+    (mirror WGF) and ``True`` otherwise.
     """
     model = modelcontext(model)
     if model.discrete_value_vars:
         raise ValueError("Prior gradient requires continuous value variables.")
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
+    require_mirror_compatible_transforms(model)
+    if jacobian is None:
+        jacobian = not mapper.has_transforms
 
     particles = pt.matrix("particles")
 
     def build(use_scan: bool) -> pt.TensorVariable:
-        return _batched_prior_grad_graph(
+        prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=use_scan
         )
+        if mapper.has_transforms:
+            prior_grad = prior_grad * primal_scale_graph(particles, mapper)
+        return prior_grad
 
     outs = _try_vectorize_then_scan(build)
     return _compile_particle_batch(model, particles, outs)
@@ -339,7 +372,7 @@ def compile_drift_for_logscore(
     *,
     log_ratio_clip: float = 10.0,
     eps: float = 1e-300,
-    jacobian: bool = True,
+    jacobian: bool | None = None,
 ) -> DriftFunc:
     """Compile log-score interaction and prior drift for one time step.
 
@@ -365,7 +398,7 @@ def compile_drift_for_logscore(
 
     **Implementation details**
 
-    The numerator :math:`\\nabla_\\vartheta p_{\\vartheta^{(j)}}(x_i)` is computed by 
+    The numerator :math:`\\nabla_\\vartheta p_{\\vartheta^{(j)}}(x_i)` is computed by
     the chain rule:
 
     .. math::
@@ -382,8 +415,8 @@ def compile_drift_for_logscore(
         = \\underbrace{\\frac{p_{\\vartheta^{(j)}}(x_i)}{q_{-j}(x_i)}}_{w_j(x_i)}
           \\cdot \\nabla_\\vartheta \\log p_{\\vartheta^{(j)}}(x_i).
 
-    Computing :math:`q_{-j}(x_i) = \\frac{1}{p-1} \\sum_{\\ell \\neq j} p_{\\vartheta^{(\\ell)}}(x_i)` 
-    directly in probability space is numerically unstable so instead we work in log-space and use the 
+    Computing :math:`q_{-j}(x_i) = \\frac{1}{p-1} \\sum_{\\ell \\neq j} p_{\\vartheta^{(\\ell)}}(x_i)`
+    directly in probability space is numerically unstable so instead we work in log-space and use the
     log-sum-exp trick. Define the particle-wise maximum density as
 
     .. math::
@@ -401,7 +434,7 @@ def compile_drift_for_logscore(
           - \\log(p - 1)
 
     where the sum :math:`\\sum_{\\ell \\neq j}` is computed by forming the full sum
-    over all particles and subtracting particle :math:`j`'s own contribution. The raw 
+    over all particles and subtracting particle :math:`j`'s own contribution. The raw
     log importance weight
 
     .. math::
@@ -424,6 +457,13 @@ def compile_drift_for_logscore(
     which can otherwise explode ``ratio * score`` in the drift. Clipping in
     log-space is preferable to clipping weights directly.
 
+    **Mirror-mapped parameters.** Particles stay in dual ``value_vars`` coordinates.
+    ``score`` / ``prior_grad`` are converted from :math:`\\nabla_y` to
+    :math:`\\nabla_\\theta` via :math:`\\exp(-\\texttt{log\\_jac\\_det}(y))`
+    before the WGF reduction (Gu & Kim 2026). Under transforms, prior
+    ``jacobian`` defaults to ``False``. Diffusion scaling is applied in
+    :func:`~pymc_prop.particles.time_step`.
+
     Parameters
     ----------
     mapper
@@ -435,14 +475,16 @@ def compile_drift_for_logscore(
     eps
         Floor for leave-one-particle-out normalising sums in the compiled graph.
     jacobian
-        Whether to use the Jacobian of the log prior.
-    
+        PyMC change-of-variables switch on the prior logp. ``None`` (default)
+        uses ``False`` when any free RV has a transform, else ``True``.
+
     Returns
     -------
     wgf_grad
-        Interaction drift, shape ``(n_particles, n_params)``.
+        Interaction drift, shape ``(n_particles, n_params)`` (primal gradient
+        laid out in dual flat coordinates).
     prior_grad
-        Prior score gradient, shape ``(n_particles, n_params)``.
+        Prior score gradient, same layout.
 
     Shapes (``p`` = particles, ``d`` = raveled ``value_vars``, ``n_obs`` observations):
 
@@ -457,10 +499,12 @@ def compile_drift_for_logscore(
     if not model.free_RVs:
         raise ValueError("Model has no free random variables.")
 
-    # Model guard: reject implicit transforms on free RVs.
-    require_unconstrained_free_rvs(model)
+    require_mirror_compatible_transforms(model)
+    if jacobian is None:
+        # jacobian=False: constrained-space prior potential (mirror MLD)
+        jacobian = not mapper.has_transforms
 
-    particles = pt.matrix("particles")  # compile input (p, d): one row per particle in flat value_vars space
+    particles = pt.matrix("particles")
 
     def build(use_scan: bool) -> tuple[pt.TensorVariable, pt.TensorVariable, pt.TensorVariable]:
         logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=use_scan)
@@ -471,6 +515,11 @@ def compile_drift_for_logscore(
 
     logp, score, prior_grad = _try_vectorize_then_scan(build)
 
+    if mapper.has_transforms:
+        primal_scale = primal_scale_graph(particles, mapper)
+        score = score * primal_scale[:, None, :]
+        prior_grad = prior_grad * primal_scale
+
     # subtract particle-wise max before exponentiating to prevent overflow/underflow
     logp_max = pt.max(logp, axis=0, keepdims=True)
     exp_shifted = pt.exp(logp - logp_max)
@@ -479,21 +528,17 @@ def compile_drift_for_logscore(
     sum_all = pt.sum(exp_shifted, axis=0, keepdims=True)
     sum_excl = pt.maximum(sum_all - exp_shifted, eps)
 
-    # restore the log p_max shift and divide by (p-1)
     denom = pt.cast(particles.shape[0] - 1, logp.dtype)
-    log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)  # (1/(p-1)) Σ_{ℓ≠j} p_{ϑ^{(ℓ)}}
-    
+    log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)
+
     # log importance weights vs mixture for chain rule, clipped for stability
     log_ratio_raw = logp - log_mix
-    # symmetric cap on log w_{i,j} before exp (stability)
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
-    ratio = pt.exp(log_ratio)  # exponentiate for importance weights
-    
-    # particle interaction term computed by chain rule
-    # − Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)})  (λ_n applied in time_step)
+    ratio = pt.exp(log_ratio)
+
+    # − Σ_i w_{i,j} ∇_θ log p(y_i|θ^{(j)})  (λ_n applied in time_step)
     wgf_grad = -pt.sum(ratio[:, :, None] * score, axis=1)
-    
-    # return compiled functions
+
     return model.compile_fn(
         inputs=[particles],
         outs=[wgf_grad, prior_grad],
