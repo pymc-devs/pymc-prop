@@ -21,7 +21,7 @@ _MIRROR_COMPATIBLE = (LogTransform, LogOddsTransform, IntervalTransform)
 
 @dataclass(frozen=True)
 class TransformSlice:
-    """One flat slab of dual ``value_vars`` and its free-RV / transform metadata."""
+    """One flat slab of unconstrained ``value_vars`` and its free-RV / transform metadata."""
 
     value_name: str
     free_name: str
@@ -37,11 +37,12 @@ class TransformSlice:
 class PointMapper:
     """Bidirectional map between PyMC ``value_vars`` points and flat particles.
 
-    Particles live in dual ``value_vars`` coordinates (unconstrained after PyMC
-    transforms). With elementwise transforms, mirror WGF keeps this dual storage
-    and scales diffusion by
-    :math:`\\sigma(y)=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det}(y))`
-    (Gu & Kim 2026). Identity coordinates use ``σ ≡ 1``.
+    Particles live in unconstrained ``value_vars``. With elementwise transforms,
+    mirror-mapped Wasserstein gradient flow keeps this storage and scales
+    diffusion by
+    :math:`\\sigma=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det})`
+    evaluated on unconstrained coordinates (Gu & Kim 2025, §2.1).
+    Identity coordinates use ``σ ≡ 1``.
     """
 
     start_point: PointType
@@ -75,7 +76,7 @@ class PointMapper:
         return np.asarray(scale_fn(particles), dtype=float)
 
     def noise_scale(self, particles: np.ndarray) -> np.ndarray:
-        """Mirror noise factor ``σ(y)`` with shape matching ``particles``.
+        """Mirror noise factor ``σ`` on unconstrained ``value_vars``, matching ``particles``.
 
         Identity (no transform) coordinates are ``1`` so the Euler–Maruyama
         update matches the unconstrained isotropic step.
@@ -83,15 +84,16 @@ class PointMapper:
         return self._apply_scale_fn(particles, self._noise_scale_fn)
 
     def primal_scale(self, particles: np.ndarray) -> np.ndarray:
-        """Dual→primal chain-rule factor ``exp(-log_jac_det(y))``.
+        """Unconstrained→constrained chain-rule factor ``exp(-log_jac_det)``.
 
-        Multiply dual ``value_vars`` gradients by this to recover
-        :math:`\\nabla_\\theta` for mirror EM. Identity slabs are ``1``.
+        Multiply unconstrained ``value_vars`` gradients by this to recover
+        :math:`\\nabla_\\theta` for mirror-mapped Euler–Maruyama. Identity
+        slabs are ``1``.
         """
         return self._apply_scale_fn(particles, self._primal_scale_fn)
 
     def backward_slab(self, slab: np.ndarray, sl: TransformSlice) -> np.ndarray:
-        """Map a dual flat slab ``(..., size)`` to primal free-RV values."""
+        """Map an unconstrained flat slab ``(..., size)`` to constrained free-RV values."""
         if sl.transform is None or sl.backward_fn is None:
             return np.asarray(slab, dtype=float)
         slab = np.asarray(slab, dtype=float)
@@ -143,9 +145,7 @@ def require_mirror_compatible_transforms(model=None) -> None:
     """
     model = modelcontext(model)
     if model.discrete_value_vars:
-        raise ValueError(
-            "PrO log-score / mirror WGF requires continuous value variables."
-        )
+        raise ValueError("Log-score sampling requires continuous value variables.")
     unsupported: list[str] = []
     for rv in model.free_RVs:
         transform = model.rvs_to_transforms.get(rv)
@@ -156,7 +156,7 @@ def require_mirror_compatible_transforms(model=None) -> None:
     if unsupported:
         names = ", ".join(unsupported)
         raise ValueError(
-            "PrO mirror WGF supports elementwise transforms only "
+            "Only elementwise transforms are supported "
             "(LogTransform, LogOddsTransform, Interval); "
             f"found unsupported: [{names}]. "
             "Simplex / Dirichlet / ordered maps are not supported yet."
@@ -164,7 +164,7 @@ def require_mirror_compatible_transforms(model=None) -> None:
 
 
 def _compile_backward_fn(model, rv, transform, value_var):
-    """Compile NumPy ``backward`` for one dual value var."""
+    """Compile NumPy ``backward`` for one unconstrained value var."""
     if isinstance(transform, IntervalTransform):
         back = transform.backward(value_var, *rv.owner.inputs)
     else:
@@ -216,7 +216,7 @@ def _build_slices(model, point_map_info) -> tuple[TransformSlice, ...]:
 
 
 def _slab_log_jac_det(y_shaped: pt.TensorVariable, sl: TransformSlice) -> pt.TensorVariable:
-    """Elementwise ``log_jac_det`` for one dual slab (Interval needs RV inputs)."""
+    """Elementwise ``log_jac_det`` for one unconstrained slab (Interval needs RV inputs)."""
     if isinstance(sl.transform, IntervalTransform):
         return sl.transform.log_jac_det(y_shaped, *sl.free_rv.owner.inputs)
     return sl.transform.log_jac_det(y_shaped)
@@ -230,7 +230,8 @@ def _compile_mirror_scale_fn(
 ):
     """Compile per-coordinate scale ``exp(ljd_coef * log_jac_det)``, shape ``(p, d)``.
 
-    ``ljd_coef=-0.5`` → mirror noise ``σ``; ``ljd_coef=-1`` → primal chain-rule factor.
+    ``ljd_coef=-0.5`` → mirror noise ``σ``; ``ljd_coef=-1`` → constrained-space
+    chain-rule factor (``primal_scale``).
     """
     if not any(sl.transform is not None for sl in slices):
         return None
@@ -259,10 +260,11 @@ def primal_scale_graph(
     particles: pt.TensorVariable,
     mapper: PointMapper,
 ) -> pt.TensorVariable:
-    """Dual→primal chain-rule factor ``exp(-log_jac_det(y))``, shape ``(p, d)``.
+    """Unconstrained→constrained chain-rule factor ``exp(-log_jac_det)``, shape ``(p, d)``.
 
-    Multiplies dual-space scores / prior grads to recover
-    :math:`\\nabla_\\theta` (Gu & Kim). Identity slabs contribute ``1``.
+    Multiplies unconstrained scores / prior grads to recover
+    :math:`\\nabla_\\theta` (Gu & Kim 2025). Identity slabs
+    contribute ``1``.
     """
     if not mapper.has_transforms:
         return pt.ones_like(particles)

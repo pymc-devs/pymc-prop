@@ -1,4 +1,4 @@
-"""Tuning-free FUSE adaptive step-size schedule (Sharrock & Nemeth 2025)."""
+"""Functional upper bound step size estimator (FUSE; Sharrock and Nemeth, 2025)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 
 from pymc_prop.particles import raw_drift, scaled_drift
 
-# Floor on cumulative gradient energy in the FUSE denominator (not r_eps).
+# Floor on cumulative gradient energy in the adaptive-schedule denominator (not r_eps).
 _GRADIENT_ENERGY_FLOOR = 1e-12
 
 # Keys written to ``sample_stats`` when ``step_size=None``.
@@ -48,7 +48,7 @@ class FuseState:
 
 
 def fuse_grad_energy(raw: np.ndarray) -> float:
-    """Empirical gradient energy ``(1/n) Σ_i ‖raw[i]‖²`` for FUSE."""
+    """Empirical gradient energy ``(1/n) Σ_i ‖raw[i]‖²`` for the adaptive schedule."""
     return float(np.mean(np.sum(raw * raw, axis=1)))
 
 
@@ -103,7 +103,7 @@ def fuse_adaptive_step(
 ) -> tuple[float, FuseState, FuseStepDiagnostics]:
     """Adaptive FUSE schedule update (:math:`t \\geq 1`).
 
-    Particle discretization of the forward-flow FUSE schedule (Sharrock & Nemeth
+    Particle discretization of the forward-flow schedule (Sharrock & Nemeth
     2025, Sec. 5.1.1)::
 
         η_t = r̄_t / sqrt(G_t)
@@ -153,11 +153,11 @@ def fuse_step_size(
     directly when the schedule phase should be explicit at the call site.
     """
     if state is None:
-        # t = 0 initial schedule step (η_0, x_{1/2})
+        # t = 0: initial schedule step (η_0, x_{1/2})
         return fuse_initial_step(
             particles, wgf_grad, prior_grad, learning_rate, r_eps
         )
-    # t ≥ 1 adaptive update (η_t, r̄_t, G_t)
+    # t ≥ 1: adaptive schedule update (η_t, r̄_t, G_t)
     return fuse_adaptive_step(
         particles, wgf_grad, prior_grad, learning_rate, state, r_eps
     )

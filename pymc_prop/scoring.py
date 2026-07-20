@@ -15,7 +15,7 @@ DriftReturn = tuple[np.ndarray, np.ndarray]
 
 
 class ScoringRule:
-    """Scoring rule interface for WGF drift compilation."""
+    """Scoring rule interface for Wasserstein gradient flow (WGF) drift compilation."""
 
     def compile_wgf(self, model, mapper: PointMapper) -> Callable[[np.ndarray], np.ndarray]:
         raise NotImplementedError
@@ -26,11 +26,12 @@ class ScoringRule:
 
 @dataclass
 class LogScore(ScoringRule):
-    """Log-score scoring rule for PrO particle sampling.
+    """Log-score scoring rule for predictively oriented (PrO) particle sampling.
 
     Uses :func:`~pymc_prop.compile.compile_drift_for_logscore`. Requires
     continuous ``model.value_vars`` and at least two particles. Elementwise
-    transforms are supported via mirror WGF; simplex maps are rejected.
+    transforms are supported via mirror-mapped Wasserstein gradient flow (WGF);
+    simplex maps are rejected.
 
     :meth:`compile_drift` returns ``(wgf_grad, prior_grad)`` per time step.
     :meth:`compile_wgf` returns the interaction term only.
@@ -59,7 +60,7 @@ class LogScore(ScoringRule):
 
         def wgf(particles: np.ndarray) -> np.ndarray:
             if particles.shape[0] < 2:
-                raise ValueError("Log-score WGF requires at least two particles.")
+                raise ValueError("Log-score requires at least two particles.")
             wgf_grad, _prior_grad = drift_fn(particles)
             return wgf_grad
 

@@ -1,4 +1,4 @@
-"""Convert PrO particle traces to ArviZ DataTree output."""
+"""Convert predictively oriented particle traces to ArviZ DataTree output."""
 
 from __future__ import annotations
 
@@ -29,10 +29,10 @@ def _particles_to_posterior(
     model,
     mapper: PointMapper,
 ) -> dict[str, np.ndarray]:
-    """Split flat dual particles into named free-RV arrays ``(draw, chain, *event)``.
+    """Split flat unconstrained particles into named free-RV arrays ``(draw, chain, *event)``.
 
     Applies ``transform.backward`` so posterior keys are free-RV names with
-    constrained (primal) values when transforms are present.
+    constrained values when transforms are present.
     """
     if particles.ndim != 3:
         raise ValueError(
@@ -198,7 +198,7 @@ def _compute_sample_stats(
     fuse_stats: dict[str, np.ndarray] | None = None,
     mixture_log_predictive: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
-    """PrO-specific diagnostics derived from retained particle clouds."""
+    """Predictively oriented diagnostics derived from retained particle clouds."""
     n_retained, n_particles = particles.shape[:2]
     if n_retained == 0:
         return {}
@@ -269,7 +269,7 @@ def _attach_pro_coords(
     step_coord: np.ndarray | None,
     groups: Sequence[str] | None = None,
 ) -> None:
-    """Attach PrO ``draw`` and ``step`` coords to groups with a draw dimension."""
+    """Attach ``draw`` and ``step`` coords to groups with a draw dimension."""
     if groups is None:
         groups = list(dt.children)
     for name in groups:
@@ -390,7 +390,7 @@ def _pro_to_datatree(
     datatree_kwargs: dict[str, Any] | None = None,
     fuse_stats: dict[str, np.ndarray] | None = None,
 ) -> DataTree:
-    """Package retained PrO particles as an ArviZ DataTree.
+    """Package retained predictively oriented particles as an ArviZ DataTree.
 
     The sampler ndarray has shape ``(n_steps, n_particles, flat)`` on the
     normal :func:`~pymc_prop.sampler.run_sampler` path. ArviZ ``sample_dims``:

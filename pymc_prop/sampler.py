@@ -1,4 +1,4 @@
-"""Simulation loop for PrO particles."""
+"""Simulation loop for predictively oriented particles."""
 
 from __future__ import annotations
 
@@ -33,22 +33,26 @@ def run_sampler(
     r_eps: float = 1e-5,
     fuse_diagnostics: dict[str, list[float]] | None = None,
 ) -> np.ndarray:
-    """Run the PrO particle simulation loop.
+    """Run the predictively oriented particle simulation loop.
 
     Returns retained particle arrays with shape ``(n_steps, n_particles,
-    n_params)``. The loop runs ``tune + n_steps`` Euler-Maruyama steps; each draw after
-    warmup is an empirical particle measure at a retained simulation step.
+    n_params)``. The loop runs ``tune + n_steps`` Euler–Maruyama steps; each
+    draw after warmup is an empirical particle measure at a retained simulation
+    step.
 
-    When ``step_size`` is ``None``, the tuning-free FUSE schedule (Sharrock &
-    Nemeth 2025) adapts ``η_t`` from raw and scaled drift fields; ``r_eps`` is
-    the schedule floor. FUSE state persists across the full ``tune + n_steps``
-    loop (no reset at the tune boundary).
+    When ``step_size`` is ``None``, the functional upper bound step size
+    estimator (FUSE; Sharrock and Nemeth, 2025) adapts ``η_t`` from raw and
+    scaled drift fields; ``r_eps`` is the schedule floor. Schedule state
+    persists across the full ``tune + n_steps`` loop (no reset at the tune
+    boundary).
     """
     if n_particles < 2:
         raise ValueError("n_particles must be at least 2.")
     if step_size is None:
         if r_eps <= 0:
-            raise ValueError("r_eps must be positive when step_size is None (FUSE).")
+            raise ValueError(
+                "r_eps must be positive when step_size is None (adaptive schedule)."
+            )
     elif step_size <= 0:
         raise ValueError("step_size must be positive.")
 
@@ -56,8 +60,8 @@ def run_sampler(
 
     particles = initialize_particles(model, mapper, n_particles, rng)
 
-    # LogScore: compile_drift once (fused wgf+prior). Do not also call compile_wgf --
-    # that rebuilds the same fused graph and discards prior_grad.
+    # LogScore: compile_drift once (fused interaction + prior). Do not also call
+    # compile_wgf -- that rebuilds the same fused graph and discards prior_grad.
     wgf_fn = None
     batched_prior_grad_fn = None
     drift_fn = None
@@ -68,7 +72,8 @@ def run_sampler(
         batched_prior_grad_fn = compile_batched_prior_grad(mapper, model)
 
     use_fuse = step_size is None
-    # FUSE Sec. 5.1.1: None until initial schedule step (t=0); then mutable state
+    # Adaptive schedule (Sharrock & Nemeth Sec. 5.1.1): None until initial step
+    # (t=0); then mutable state
     fuse_state: FuseState | None = None
 
     retained: List[np.ndarray] = []

@@ -88,10 +88,10 @@ def initialize_particles(
 
 
 def raw_drift(wgf_grad: np.ndarray, prior_grad: np.ndarray) -> np.ndarray:
-    """Raw interaction drift for FUSE gradient-energy accumulation.
+    """Raw interaction drift for adaptive-schedule gradient-energy accumulation.
 
     Returns ``wgf_grad - prior_grad`` (no ``learning_rate``). Used only for
-    :math:`g_s^2` in the FUSE denominator; particle motion uses
+    :math:`g_s^2` in the adaptive-schedule denominator; particle motion uses
     :func:`scaled_drift`.
     """
     return wgf_grad - prior_grad
@@ -113,18 +113,19 @@ def time_step(
     rng: np.random.Generator,
     mapper: PointMapper | None = None,
 ) -> np.ndarray:
-    """Advance particles one discrete-time step along the log-score WGF.
+    """Advance particles one discrete-time step along the log-score Wasserstein gradient flow (WGF).
 
     ``learning_rate`` is :math:`\\lambda_n`, ``step_size`` is :math:`\\varepsilon`;
     drift comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`
-    (primal :math:`\\nabla_\\theta` laid out in dual flat coordinates).
+    (constrained-space :math:`\\nabla_\\theta` laid out in unconstrained flat
+    coordinates).
 
     Diffusion uses mirror noise
-    :math:`\\sigma(y)=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det}(y))` when
-    ``mapper`` has transforms; identity coordinates keep ``σ ≡ 1`` (same as
-    isotropic Euler-Maruyama).
+    :math:`\\sigma=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det})` on unconstrained
+    ``value_vars`` when ``mapper`` has transforms; identity coordinates keep
+    ``σ ≡ 1`` (same as isotropic Euler–Maruyama).
     """
-    # drift = λ_n · wgf_grad − prior_grad  (primal ∇_θ; particles are dual y)
+    # drift = λ_n · wgf_grad − prior_grad  (∇_θ; particles are unconstrained)
     drift = learning_rate * wgf_grad - prior_grad
     xi = rng.standard_normal(size=particles.shape)
     if mapper is None:
