@@ -42,6 +42,10 @@ def _particles_to_posterior(
     n_retained, n_particles, n_flat = particles.shape
     posterior: dict[str, np.ndarray] = {}
 
+    # Preferred path: mapper.slices partitions the flat particle axis into one
+    # slab per value_var. ``offset`` / ``size`` locate that slab; ``backward_slab``
+    # maps unconstrained coords → constrained free-RV values when a transform is
+    # present (identity otherwise). Keys are free-RV names for ArviZ.
     if mapper.slices:
         covered = 0
         for sl in mapper.slices:
@@ -61,7 +65,9 @@ def _particles_to_posterior(
             )
         return posterior
 
-    # Fallback when slices were not populated (should not happen via make_point_mapper).
+    # Fallback when slices were not populated (should not happen via make_point_mapper):
+    # walk point_map_info with a running ``offset``, skip non-free entries, and
+    # reshape each unconstrained slab in place (no transform.backward).
     free_names = {rv.name for rv in model.free_RVs}
     offset = 0
     for name, shape, size, _dtype in mapper.point_map_info:
@@ -198,7 +204,7 @@ def _compute_sample_stats(
     fuse_stats: dict[str, np.ndarray] | None = None,
     mixture_log_predictive: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
-    """Predictively oriented diagnostics derived from retained particle clouds."""
+    """Diagnostics related to the interacting particle system."""
     n_retained, n_particles = particles.shape[:2]
     if n_retained == 0:
         return {}

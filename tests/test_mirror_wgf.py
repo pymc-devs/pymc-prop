@@ -7,6 +7,7 @@ import pymc as pm
 import pytest
 
 from pymc_prop.compile import (
+    compile_batched_observed_logp_score,
     compile_batched_prior_grad,
     compile_drift_for_logscore,
     compile_flat_prior_grad,
@@ -71,6 +72,34 @@ def test_dirichlet_simplex_rejected():
 
     with pytest.raises(ValueError, match="Simplex|elementwise"):
         make_point_mapper(model)
+
+
+def test_score_primal_scale_broadcast_shape():
+    """score (p, n_obs, d) and primal_scale (p, d) broadcast via [:, None, :]."""
+    rng = np.random.default_rng(0)
+    y = rng.normal(0.0, 1.0, size=5)
+    with pm.Model() as model:
+        sigma = pm.HalfNormal("sigma", sigma=1.0)
+        mu = pm.Normal("mu", 0.0, 1.0)
+        pm.Normal("obs", mu=mu, sigma=sigma, observed=y)
+
+    mapper = make_point_mapper(model)
+    assert mapper.has_transforms
+    base = mapper.ravel(mapper.start_point)
+    particles = base[None, :] + 0.05 * rng.standard_normal((4, base.size))
+    n_particles, n_flat = particles.shape
+    n_obs = y.shape[0]
+
+    _logp, score = compile_batched_observed_logp_score(model, mapper)(particles)
+    scale = mapper.primal_scale(particles)
+    assert score.shape == (n_particles, n_obs, n_flat)
+    assert scale.shape == (n_particles, n_flat)
+    scaled = score * scale[:, None, :]
+    assert scaled.shape == score.shape
+
+    wgf_grad, prior_grad = compile_drift_for_logscore(mapper, model)(particles)
+    assert wgf_grad.shape == (n_particles, n_flat)
+    assert prior_grad.shape == (n_particles, n_flat)
 
 
 def test_halfnormal_prior_primal_grad_fd():

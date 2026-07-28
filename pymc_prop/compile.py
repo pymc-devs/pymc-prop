@@ -340,7 +340,7 @@ def compile_batched_prior_grad(
     *,
     jacobian: bool | None = None,
 ) -> BatchedGradFunc:
-    """Compile batched prior gradients for particle steps.
+    """Compile batched prior gradients.
 
     Under transforms, applies :func:`~pymc_prop.points.primal_scale_graph` so the
     returned layout matches the constrained-space gradient used in the time step.
@@ -466,7 +466,7 @@ def compile_drift_for_logscore(
     **Mirror-mapped parameters.** Particles stay in unconstrained ``value_vars``.
     Under transforms, ``score`` / ``prior_grad`` are scaled by
     :math:`\\exp(-\\texttt{log\\_jac\\_det})` so the Wasserstein gradient flow
-    (WGF) reduction uses constrained-space gradients
+    reduction uses constrained-space gradients
     :math:`\\nabla_\\theta` laid out in unconstrained flat coordinates (Gu & Kim
     2025, §2.1). Prior ``jacobian`` then defaults to ``False`` so
     ``model.logp`` is the constrained-space potential, not the change-of-variables
@@ -525,6 +525,7 @@ def compile_drift_for_logscore(
     logp, score, prior_grad = _try_vectorize_then_scan(build)
 
     if mapper.has_transforms:
+        # score: (p, n_obs, d); primal_scale: (p, d) → broadcast over observations
         primal_scale = primal_scale_graph(particles, mapper)
         score = score * primal_scale[:, None, :]
         prior_grad = prior_grad * primal_scale
@@ -538,10 +539,11 @@ def compile_drift_for_logscore(
     sum_excl = pt.maximum(sum_all - exp_shifted, eps)
 
     denom = pt.cast(particles.shape[0] - 1, logp.dtype)
-    log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)
+    log_mix = logp_max + pt.log(sum_excl) - pt.log(denom)  # (1/(p-1)) Σ_{ℓ≠j} p_{ϑ^{(ℓ)}}
 
     # log importance weights vs mixture for chain rule, clipped for stability
     log_ratio_raw = logp - log_mix
+    # symmetric cap on log w_{i,j} before exp (stability)
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
     ratio = pt.exp(log_ratio)
 

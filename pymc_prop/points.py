@@ -37,9 +37,11 @@ class TransformSlice:
 class PointMapper:
     """Bidirectional map between PyMC ``value_vars`` points and flat particles.
 
-    Particles live in unconstrained ``value_vars``. With elementwise transforms,
-    mirror-mapped Wasserstein gradient flow keeps this storage and scales
-    diffusion by
+    Particles live in unconstrained ``value_vars``. Supported elementwise
+    transforms: ``LogTransform``, ``LogOddsTransform``, ``Interval`` /
+    ``IntervalTransform``. Coupled maps (e.g. simplex / Dirichlet) are not
+    supported yet. With a supported transform, mirror-mapped Wasserstein
+    gradient flow keeps this storage and scales diffusion by
     :math:`\\sigma=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det})`
     evaluated on unconstrained coordinates (Gu & Kim 2025, §2.1).
     Identity coordinates use ``σ ≡ 1``.
@@ -138,10 +140,9 @@ def flat_to_value_vars(
 def require_mirror_compatible_transforms(model=None) -> None:
     """Require continuous free RVs with elementwise (or no) transforms.
 
-    MVP allowlist: ``LogTransform``, ``LogOddsTransform``, ``Interval`` /
+    Supported: ``LogTransform``, ``LogOddsTransform``, ``Interval`` /
     ``IntervalTransform``. Coupled maps (e.g. ``SimplexTransform``) raise
-    ``ValueError`` — the scalar ``σ = exp(-½ log_jac_det)`` formula does not
-    apply.
+    ``ValueError``.
     """
     model = modelcontext(model)
     if model.discrete_value_vars:

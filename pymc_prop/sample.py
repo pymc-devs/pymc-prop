@@ -35,9 +35,10 @@ def sample_posterior_predictive_pro(
 
     Builds a per-particle forward grid via :func:`pymc.sample_posterior_predictive`
     on the full retained ``dt.posterior`` cloud (``sample_dims=["draw", "chain"]``),
-    then remixes it into draw-aligned mixture posterior predictive draws. Do not
-    call PyMC forward sampling on ``sample_pro`` output with default
-    ``sample_dims`` -- it mis-pairs multi-draw traces.
+    then remixes it into draw-aligned mixture posterior predictive draws. Calling
+    :func:`pymc.sample_posterior_predictive` on ``sample_pro`` output without
+    ``sample_dims=["draw", "chain"]`` swaps the ``draw`` / ``chain`` axes on 
+    multi-draw traces. Use this helper instead.
 
     The exported ``posterior_predictive`` (or ``predictions``) group has shape
     ``(draw, *obs)`` with ``sample_dims=["draw"]``. Each retained index

@@ -113,7 +113,7 @@ def time_step(
     rng: np.random.Generator,
     mapper: PointMapper | None = None,
 ) -> np.ndarray:
-    """Advance particles one discrete-time step along the log-score Wasserstein gradient flow (WGF).
+    """Advance particles one discrete-time step along the log-score Wasserstein gradient flow.
 
     ``learning_rate`` is :math:`\\lambda_n`, ``step_size`` is :math:`\\varepsilon`;
     drift comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`
