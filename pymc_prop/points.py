@@ -43,7 +43,7 @@ class PointMapper:
     supported yet. With a supported transform, mirror-mapped Wasserstein
     gradient flow keeps this storage and scales diffusion by
     :math:`\\sigma=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det})`
-    evaluated on unconstrained coordinates (Gu & Kim 2025, §2.1).
+    evaluated on unconstrained coordinates (Gu \u0026 Kim 2025, §2.1).
     Identity coordinates use ``σ ≡ 1``.
     """
 
@@ -223,16 +223,12 @@ def _slab_log_jac_det(y_shaped: pt.TensorVariable, sl: TransformSlice) -> pt.Ten
     return sl.transform.log_jac_det(y_shaped)
 
 
-def _compile_mirror_scale_fn(
-    model,
-    slices: tuple[TransformSlice, ...],
-    *,
-    ljd_coef: float,
-):
-    """Compile per-coordinate scale ``exp(ljd_coef * log_jac_det)``, shape ``(p, d)``.
+def _compile_log_jac_det_fn(model, slices: tuple[TransformSlice, ...]):
+    """Compile the per-flat-dimension log_jac_det(y) graph and return a NumPy callable.
 
-    ``ljd_coef=-0.5`` → mirror noise ``σ``; ``ljd_coef=-1`` → constrained-space
-    chain-rule factor (``primal_scale``).
+    Returns None when there are no transforms (identity coordinates).
+    The callable has signature ljd_fn(particles: np.ndarray) -> np.ndarray with
+    shape (p, d) where d is the flat dimension.
     """
     if not any(sl.transform is not None for sl in slices):
         return None
@@ -242,18 +238,16 @@ def _compile_mirror_scale_fn(
     for sl in slices:
         y = particles[:, sl.offset : sl.offset + sl.size]
         if sl.transform is None:
-            cols.append(pt.ones_like(y))
+            # identity slab: log_jac_det == 0
+            cols.append(pt.zeros_like(y))
             continue
         batch = pt.shape(particles)[0]
         y_shaped = pt.reshape(y, (batch, *sl.shape))
-        ljd = _slab_log_jac_det(y_shaped, sl)
-        cols.append(pt.reshape(pt.exp(ljd_coef * ljd), (batch, sl.size)))
-    scale = pt.concatenate(cols, axis=1)
+        ljd = _slab_log_jac_det(y_shaped, sl)  # per-event log_jac_det
+        cols.append(pt.reshape(ljd, (batch, sl.size)))
+    ljd_graph = pt.concatenate(cols, axis=1)
     return model.compile_fn(
-        inputs=[particles],
-        outs=scale,
-        point_fn=False,
-        on_unused_input="ignore",
+        inputs=[particles], outs=ljd_graph, point_fn=False, on_unused_input="ignore"
     )
 
 
@@ -264,7 +258,7 @@ def primal_scale_graph(
     """Unconstrained→constrained chain-rule factor ``exp(-log_jac_det)``, shape ``(p, d)``.
 
     Multiplies unconstrained scores / prior grads to recover
-    :math:`\\nabla_\\theta` (Gu & Kim 2025). Identity slabs
+    :math:`\\nabla_\\theta` (Gu \\u0026 Kim 2025). Identity slabs
     contribute ``1``.
     """
     if not mapper.has_transforms:
@@ -292,11 +286,17 @@ def make_point_mapper(model=None) -> PointMapper:
     raveled = DictToArrayBijection.map(ordered_point)
     slices = _build_slices(model, raveled.point_map_info)
     has_transforms = any(sl.transform is not None for sl in slices)
+
+    # Single compiled source-of-truth: ljd_fn (particles -> (p, d) log-jacobian values).
+    ljd_fn = _compile_log_jac_det_fn(model, slices) if has_transforms else None
+
     noise_fn = None
     primal_fn = None
-    if has_transforms:
-        noise_fn = _compile_mirror_scale_fn(model, slices, ljd_coef=-0.5)
-        primal_fn = _compile_mirror_scale_fn(model, slices, ljd_coef=-1.0)
+    if ljd_fn is not None:
+        # Derive both scales from ljd_fn so relation is explicit and local:
+        noise_fn = lambda particles: np.exp(-0.5 * ljd_fn(particles))  # exp(-0.5 * ljd)
+        primal_fn = lambda particles: np.exp(-1.0 * ljd_fn(particles))  # noise_scale ** 2
+
     return PointMapper(
         start_point=ordered_point,
         point_map_info=raveled.point_map_info,
