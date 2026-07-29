@@ -113,20 +113,24 @@ def time_step(
     rng: np.random.Generator,
     mapper: PointMapper | None = None,
 ) -> np.ndarray:
-    """Advance particles one discrete-time step along the Wasserstein gradient flow.
+    r"""Advance particles one discrete-time step along the Wasserstein gradient flow.
 
     Let \theta denote constrained parameters and y = T.forward(\theta) the dual
-    coordinate. The mirror Langevin Euler–Maruyama update in dual space is
+    coordinate. ``learning_rate`` is \lambda_n and ``step_size`` is \eta; drift
+    comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`
+    (constrained-space \nabla_\theta laid out in unconstrained flat coordinates).
+
+    The mirror Langevin Euler–Maruyama update in dual space is
 
     .. math::
 
         y_{t+1} = y_t - \eta \,\nabla_\theta U(\theta_t) + \sqrt{2\eta} \, \sigma(y_t) \xi_t,
         \quad \theta_{t+1} = T.backward(y_{t+1}),
 
-    where \sigma(y) = \exp\big(-\tfrac12 \mathrm{log\_jac\_det}(y)\big) and
+    where \sigma(y) = \exp(-\tfrac12 \mathrm{log\_jac\_det}(y)) and
     \xi_t \sim \mathcal{N}(0, I).
 
-    Pseudocode:
+    Pseudocode::
 
         # primal -> dual
         y = transform.forward(theta)
@@ -138,9 +142,9 @@ def time_step(
         theta = transform.backward(y)
 
     This implementation keeps the existing flat/unconstrained storage and
-    applies a per-flat-dimension noise scale when ``mapper`` exposes
-    ``noise_scale``. When ``mapper`` is ``None`` or does not provide a noise
-    scale, the isotropic step (sigma == 1) is used so behaviour is unchanged.
+    applies a per-flat-dimension noise scale when ``mapper`` is provided.
+    When ``mapper`` is ``None``, the isotropic step (\sigma \equiv 1) is used
+    so behaviour is unchanged.
 
     The code below mirrors the printed pseudocode with explicit temporary
     variables ``xi`` and ``noise_scale`` to make the connection obvious.
@@ -153,11 +157,11 @@ def time_step(
 
     # noise_scale corresponds to `sigma` in the pseudocode. Default identity
     # (no transform) keeps isotropic Euler–Maruyama behaviour.
-    if mapper is not None and hasattr(mapper, "noise_scale"):
+    if mapper is None:
+        noise_scale = 1.0
+    else:
         # mapper.noise_scale mirrors: sigma = exp(-0.5 * transform.log_jac_det(y))
         noise_scale = mapper.noise_scale(particles)
-    else:
-        noise_scale = 1.0
 
     # Compose the diffusion term: sqrt(2 * eta) * sigma * xi  (elementwise)
     noise = np.sqrt(2.0 * step_size) * noise_scale * xi

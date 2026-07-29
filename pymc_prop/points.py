@@ -43,7 +43,7 @@ class PointMapper:
     supported yet. With a supported transform, mirror-mapped Wasserstein
     gradient flow keeps this storage and scales diffusion by
     :math:`\\sigma=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det})`
-    evaluated on unconstrained coordinates (Gu \u0026 Kim 2025, §2.1).
+    evaluated on unconstrained coordinates (Gu & Kim 2025, §2.1).
     Identity coordinates use ``σ ≡ 1``.
     """
 
@@ -258,7 +258,7 @@ def primal_scale_graph(
     """Unconstrained→constrained chain-rule factor ``exp(-log_jac_det)``, shape ``(p, d)``.
 
     Multiplies unconstrained scores / prior grads to recover
-    :math:`\\nabla_\\theta` (Gu \\u0026 Kim 2025). Identity slabs
+    :math:`\\nabla_\\theta` (Gu & Kim 2025). Identity slabs
     contribute ``1``.
     """
     if not mapper.has_transforms:
