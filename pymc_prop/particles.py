@@ -88,10 +88,10 @@ def initialize_particles(
 
 
 def raw_drift(wgf_grad: np.ndarray, prior_grad: np.ndarray) -> np.ndarray:
-    """Raw interaction drift for adaptive-schedule gradient-energy accumulation.
+    """Raw interaction drift for FUSE gradient-energy accumulation.
 
     Returns ``wgf_grad - prior_grad`` (no ``learning_rate``). Used only for
-    :math:`g_s^2` in the adaptive-schedule denominator; particle motion uses
+    :math:`g_s^2` in the FUSE denominator; particle motion uses
     :func:`scaled_drift`.
     """
     return wgf_grad - prior_grad
@@ -113,24 +113,54 @@ def time_step(
     rng: np.random.Generator,
     mapper: PointMapper | None = None,
 ) -> np.ndarray:
-    """Advance particles one discrete-time step along the log-score Wasserstein gradient flow.
+    """Advance particles one discrete-time step along the Wasserstein gradient flow.
 
-    ``learning_rate`` is :math:`\\lambda_n`, ``step_size`` is :math:`\\varepsilon`;
-    drift comes from :func:`~pymc_prop.compile.compile_drift_for_logscore`
-    (constrained-space :math:`\\nabla_\\theta` laid out in unconstrained flat
-    coordinates).
+    Let \theta denote constrained parameters and y = T.forward(\theta) the dual
+    coordinate. The mirror Langevin Euler–Maruyama update in dual space is
 
-    Diffusion uses mirror noise
-    :math:`\\sigma=\\exp(-\\tfrac12\\texttt{log\\_jac\\_det})` on unconstrained
-    ``value_vars`` when ``mapper`` has transforms; identity coordinates keep
-    ``σ ≡ 1`` (same as isotropic Euler–Maruyama).
+    .. math::
+
+        y_{t+1} = y_t - \eta \,\nabla_\theta U(\theta_t) + \sqrt{2\eta} \, \sigma(y_t) \xi_t,
+        \quad \theta_{t+1} = T.backward(y_{t+1}),
+
+    where \sigma(y) = \exp\big(-\tfrac12 \mathrm{log\_jac\_det}(y)\big) and
+    \xi_t \sim \mathcal{N}(0, I).
+
+    Pseudocode:
+
+        # primal -> dual
+        y = transform.forward(theta)
+        # hessian correction / mirror noise
+        sigma = exp(-0.5 * transform.log_jac_det(y))
+        # dual Euler-Maruyama step
+        y = y - eta * drift + sqrt(2 * eta) * sigma * xi
+        # dual -> primal
+        theta = transform.backward(y)
+
+    This implementation keeps the existing flat/unconstrained storage and
+    applies a per-flat-dimension noise scale when ``mapper`` exposes
+    ``noise_scale``. When ``mapper`` is ``None`` or does not provide a noise
+    scale, the isotropic step (sigma == 1) is used so behaviour is unchanged.
+
+    The code below mirrors the printed pseudocode with explicit temporary
+    variables ``xi`` and ``noise_scale`` to make the connection obvious.
     """
-    # drift = λ_n · wgf_grad − prior_grad  (∇_θ; particles are unconstrained)
+    # deterministic drift = λ_n · wgf_grad − prior_grad  (matches pseudocode's `drift`)
     drift = learning_rate * wgf_grad - prior_grad
+
+    # stochastic term: explicit standard normal draws (xi) as in pseudocode
     xi = rng.standard_normal(size=particles.shape)
-    if mapper is None:
-        noise_scale = 1.0
-    else:
+
+    # noise_scale corresponds to `sigma` in the pseudocode. Default identity
+    # (no transform) keeps isotropic Euler–Maruyama behaviour.
+    if mapper is not None and hasattr(mapper, "noise_scale"):
+        # mapper.noise_scale mirrors: sigma = exp(-0.5 * transform.log_jac_det(y))
         noise_scale = mapper.noise_scale(particles)
+    else:
+        noise_scale = 1.0
+
+    # Compose the diffusion term: sqrt(2 * eta) * sigma * xi  (elementwise)
     noise = np.sqrt(2.0 * step_size) * noise_scale * xi
+
+    # Euler–Maruyama update in (flat) unconstrained / dual coordinates
     return particles - step_size * drift + noise
