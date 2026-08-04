@@ -16,7 +16,6 @@ from pymc.pytensorf import gradient, jacobian
 from pymc_prop.points import (
     PointMapper,
     flat_to_value_vars,
-    primal_scale_graph,
     require_mirror_compatible_transforms,
 )
 
@@ -132,15 +131,14 @@ def compile_flat_prior_grad(
 ) -> FlatGradFunc:
     """Prior gradient on a flat unconstrained particle for :func:`~pymc_prop.particles.time_step`.
 
-    Applies :meth:`~pymc_prop.points.PointMapper.primal_scale` under transforms
-    to recover the constrained-space gradient layout for the time step.
+    Compiles the dual (unconstrained) prior gradient, then scales at runtime by
+    :meth:`~pymc_prop.points.PointMapper.primal_scale` (identity → ones) so the
+    returned layout matches the constrained-space gradient used in the time step.
     """
     grad_fn = compile_prior_gradient(model, jacobian=jacobian)
 
     def flat_grad(particle: np.ndarray) -> np.ndarray:
         unconstrained_grad = np.asarray(grad_fn(mapper.unravel(particle)), dtype=float)
-        if not mapper.has_transforms:
-            return unconstrained_grad
         return unconstrained_grad * mapper.primal_scale(particle)
 
     return flat_grad
@@ -342,12 +340,13 @@ def compile_batched_prior_grad(
 ) -> BatchedGradFunc:
     """Compile batched prior gradients.
 
-    Under transforms, applies :func:`~pymc_prop.points.primal_scale_graph` so the
-    returned layout matches the constrained-space gradient used in the time step.
-    Uses vectorized batching when possible; otherwise ``scan`` at compile time.
-    When ``jacobian`` is ``None``, defaults to ``False`` under transforms
-    (constrained-space potential for mirror Langevin dynamics) and ``True``
-    otherwise.
+    Compiles the raw dual (unconstrained) prior-gradient graph, then scales at
+    runtime by :meth:`~pymc_prop.points.PointMapper.primal_scale` (identity →
+    ones) so the returned layout matches the constrained-space gradient used in
+    the time step. Uses vectorized batching when possible; otherwise ``scan`` at
+    compile time. When ``jacobian`` is ``None``, defaults to ``False`` under
+    transforms (constrained-space potential for mirror Langevin dynamics) and
+    ``True`` otherwise.
     """
     model = modelcontext(model)
     if model.discrete_value_vars:
@@ -361,15 +360,18 @@ def compile_batched_prior_grad(
     particles = pt.matrix("particles")
 
     def build(use_scan: bool) -> pt.TensorVariable:
-        prior_grad = _batched_prior_grad_graph(
+        return _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=use_scan
         )
-        if mapper.has_transforms:
-            prior_grad = prior_grad * primal_scale_graph(particles, mapper)
-        return prior_grad
 
     outs = _try_vectorize_then_scan(build)
-    return _compile_particle_batch(model, particles, outs)
+    raw_fn = _compile_particle_batch(model, particles, outs)
+
+    def batched(particles_np: np.ndarray) -> np.ndarray:
+        g = np.asarray(raw_fn(particles_np), dtype=float)
+        return g * mapper.primal_scale(particles_np)
+
+    return batched
 
 
 def compile_drift_for_logscore(
@@ -464,11 +466,13 @@ def compile_drift_for_logscore(
     Clipping in log-space is preferable to clipping weights directly.
 
     **Mirror-mapped parameters.** Particles stay in unconstrained ``value_vars``.
-    Under transforms, ``score`` / ``prior_grad`` are scaled by
-    :math:`\\exp(-\\texttt{log\\_jac\\_det})` so the Wasserstein gradient flow
-    reduction uses constrained-space gradients
-    :math:`\\nabla_\\theta` laid out in unconstrained flat coordinates (Gu & Kim
-    2025, §2.1). Prior ``jacobian`` then defaults to ``False`` so
+    Leave-one-out reduction runs on dual (unconstrained) scores; the returned
+    ``wgf_grad`` / ``prior_grad`` are then scaled at runtime by
+    :meth:`~pymc_prop.points.PointMapper.primal_scale`
+    (:math:`\\exp(-\\texttt{log\\_jac\\_det})` via the mapper's ``ljd_fn``;
+    identity → ones) so the Wasserstein gradient flow uses constrained-space
+    gradients :math:`\\nabla_\\theta` laid out in unconstrained flat coordinates
+    (Gu & Kim 2025, §2.1). Prior ``jacobian`` then defaults to ``False`` so
     ``model.logp`` is the constrained-space potential, not the change-of-variables
     density. Diffusion scaling is applied in
     :func:`~pymc_prop.particles.time_step`.
@@ -524,12 +528,6 @@ def compile_drift_for_logscore(
 
     logp, score, prior_grad = _try_vectorize_then_scan(build)
 
-    if mapper.has_transforms:
-        # score: (p, n_obs, d); primal_scale: (p, d) → broadcast over observations
-        primal_scale = primal_scale_graph(particles, mapper)
-        score = score * primal_scale[:, None, :]
-        prior_grad = prior_grad * primal_scale
-
     # subtract particle-wise max before exponentiating to prevent overflow/underflow
     logp_max = pt.max(logp, axis=0, keepdims=True)
     exp_shifted = pt.exp(logp - logp_max)
@@ -547,12 +545,21 @@ def compile_drift_for_logscore(
     log_ratio = pt.clip(log_ratio_raw, -log_ratio_clip, log_ratio_clip)
     ratio = pt.exp(log_ratio)
 
-    # − Σ_i w_{i,j} ∇_θ log p(y_i|θ^{(j)})  (λ_n applied in time_step)
+    # − Σ_i w_{i,j} ∇_ϑ log p(y_i|ϑ^{(j)}) on dual scores; primal scale at runtime
     wgf_grad = -pt.sum(ratio[:, :, None] * score, axis=1)
 
-    return model.compile_fn(
+    raw_fn = model.compile_fn(
         inputs=[particles],
         outs=[wgf_grad, prior_grad],
         point_fn=False,
         on_unused_input="ignore",
     )
+
+    def drift(particles_np: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        wgf_out, prior_out = raw_fn(particles_np)
+        scale = mapper.primal_scale(particles_np)
+        return np.asarray(wgf_out, dtype=float) * scale, np.asarray(
+            prior_out, dtype=float
+        ) * scale
+
+    return drift

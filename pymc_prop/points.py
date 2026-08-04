@@ -10,13 +10,24 @@ import numpy as np
 import pytensor.tensor as pt
 
 from pymc.blocking import DictToArrayBijection, RaveledVars
-from pymc.logprob.transforms import IntervalTransform, LogOddsTransform, LogTransform
 from pymc.model import modelcontext
+
+from pymc_prop.mirror import (
+    compile_backward_fn,
+    compile_log_jac_det_fn,
+    require_mirror_compatible_transforms,
+)
+
+__all__ = [
+    "TransformSlice",
+    "PointMapper",
+    "flat_to_value_vars",
+    "make_point_mapper",
+    "require_mirror_compatible_transforms",
+]
 
 
 PointType = Dict[str, np.ndarray]
-
-_MIRROR_COMPATIBLE = (LogTransform, LogOddsTransform, IntervalTransform)
 
 
 @dataclass(frozen=True)
@@ -137,53 +148,6 @@ def flat_to_value_vars(
     return out
 
 
-def require_mirror_compatible_transforms(model=None) -> None:
-    """Require continuous free RVs with elementwise (or no) transforms.
-
-    Supported: ``LogTransform``, ``LogOddsTransform``, ``Interval`` /
-    ``IntervalTransform``. Coupled maps (e.g. ``SimplexTransform``) raise
-    ``ValueError``.
-    """
-    model = modelcontext(model)
-    if model.discrete_value_vars:
-        raise ValueError("Log-score sampling requires continuous value variables.")
-    unsupported: list[str] = []
-    for rv in model.free_RVs:
-        transform = model.rvs_to_transforms.get(rv)
-        if transform is None:
-            continue
-        if not isinstance(transform, _MIRROR_COMPATIBLE):
-            unsupported.append(f"{rv.name!r} ({type(transform).__name__})")
-    if unsupported:
-        names = ", ".join(unsupported)
-        raise ValueError(
-            "Only elementwise transforms are supported "
-            "(LogTransform, LogOddsTransform, Interval); "
-            f"found unsupported: [{names}]. "
-            "Simplex / Dirichlet / ordered maps are not supported yet."
-        )
-
-
-def _compile_backward_fn(model, rv, transform, value_var):
-    """Compile NumPy ``backward`` for one unconstrained value var."""
-    if isinstance(transform, IntervalTransform):
-        back = transform.backward(value_var, *rv.owner.inputs)
-    else:
-        back = transform.backward(value_var)
-
-    back_fn = model.compile_fn(
-        inputs=[value_var], outs=back, on_unused_input="ignore"
-    )
-    name = value_var.name
-
-    def backward_1d(y_flat: np.ndarray) -> np.ndarray:
-        shaped = np.asarray(y_flat, dtype=float).reshape(value_var.type.shape)
-        out = back_fn({name: shaped})
-        return np.asarray(out, dtype=float).reshape(-1)
-
-    return backward_1d
-
-
 def _build_slices(model, point_map_info) -> tuple[TransformSlice, ...]:
     """Attach free-RV / transform metadata to each ``point_map_info`` slab."""
     value_to_rv = {model.rvs_to_values[rv].name: rv for rv in model.free_RVs}
@@ -199,7 +163,7 @@ def _build_slices(model, point_map_info) -> tuple[TransformSlice, ...]:
         backward_fn = None
         if transform is not None:
             value_var = model.rvs_to_values[rv]
-            backward_fn = _compile_backward_fn(model, rv, transform, value_var)
+            backward_fn = compile_backward_fn(model, rv, transform, value_var)
         slices.append(
             TransformSlice(
                 value_name=name,
@@ -216,67 +180,6 @@ def _build_slices(model, point_map_info) -> tuple[TransformSlice, ...]:
     return tuple(slices)
 
 
-def _slab_log_jac_det(y_shaped: pt.TensorVariable, sl: TransformSlice) -> pt.TensorVariable:
-    """Elementwise ``log_jac_det`` for one unconstrained slab (Interval needs RV inputs)."""
-    if isinstance(sl.transform, IntervalTransform):
-        return sl.transform.log_jac_det(y_shaped, *sl.free_rv.owner.inputs)
-    return sl.transform.log_jac_det(y_shaped)
-
-
-def _compile_log_jac_det_fn(model, slices: tuple[TransformSlice, ...]):
-    """Compile the per-flat-dimension log_jac_det(y) graph and return a NumPy callable.
-
-    Returns None when there are no transforms (identity coordinates).
-    The callable has signature ljd_fn(particles: np.ndarray) -> np.ndarray with
-    shape (p, d) where d is the flat dimension.
-    """
-    if not any(sl.transform is not None for sl in slices):
-        return None
-
-    particles = pt.matrix("particles")
-    cols: list[pt.TensorVariable] = []
-    for sl in slices:
-        y = particles[:, sl.offset : sl.offset + sl.size]
-        if sl.transform is None:
-            # identity slab: log_jac_det == 0
-            cols.append(pt.zeros_like(y))
-            continue
-        batch = pt.shape(particles)[0]
-        y_shaped = pt.reshape(y, (batch, *sl.shape))
-        ljd = _slab_log_jac_det(y_shaped, sl)  # per-event log_jac_det
-        cols.append(pt.reshape(ljd, (batch, sl.size)))
-    ljd_graph = pt.concatenate(cols, axis=1)
-    return model.compile_fn(
-        inputs=[particles], outs=ljd_graph, point_fn=False, on_unused_input="ignore"
-    )
-
-
-def primal_scale_graph(
-    particles: pt.TensorVariable,
-    mapper: PointMapper,
-) -> pt.TensorVariable:
-    """Unconstrained→constrained chain-rule factor ``exp(-log_jac_det)``, shape ``(p, d)``.
-
-    Multiplies unconstrained scores / prior grads to recover
-    :math:`\\nabla_\\theta` (Gu & Kim 2025). Identity slabs
-    contribute ``1``.
-    """
-    if not mapper.has_transforms:
-        return pt.ones_like(particles)
-
-    cols: list[pt.TensorVariable] = []
-    for sl in mapper.slices:
-        y = particles[:, sl.offset : sl.offset + sl.size]
-        if sl.transform is None:
-            cols.append(pt.ones_like(y))
-            continue
-        batch = pt.shape(particles)[0]
-        y_shaped = pt.reshape(y, (batch, *sl.shape))
-        ljd = _slab_log_jac_det(y_shaped, sl)
-        cols.append(pt.reshape(pt.exp(-ljd), (batch, sl.size)))
-    return pt.concatenate(cols, axis=1)
-
-
 def make_point_mapper(model=None) -> PointMapper:
     """Build a :class:`PointMapper` from ``model.initial_point()`` and ``value_vars``."""
     model = modelcontext(model)
@@ -288,7 +191,7 @@ def make_point_mapper(model=None) -> PointMapper:
     has_transforms = any(sl.transform is not None for sl in slices)
 
     # Single compiled source-of-truth: ljd_fn (particles -> (p, d) log-jacobian values).
-    ljd_fn = _compile_log_jac_det_fn(model, slices) if has_transforms else None
+    ljd_fn = compile_log_jac_det_fn(model, slices) if has_transforms else None
 
     noise_fn = None
     primal_fn = None

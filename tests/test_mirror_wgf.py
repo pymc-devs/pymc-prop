@@ -151,12 +151,83 @@ def test_point_prior_grad_is_dual_particle_apis_are_primal():
 
     _wgf, drift_prior = compile_drift_for_logscore(mapper, model)(y_dual)
     np.testing.assert_allclose(batched, drift_prior, rtol=1e-7, atol=1e-8)
+    scaled_dual = dual_rows * mapper.primal_scale(y_dual)
     np.testing.assert_allclose(
-        dual_rows * mapper.primal_scale(y_dual),
+        scaled_dual,
         expected_primal[:, None],
         rtol=1e-5,
         atol=1e-6,
     )
+    # NumPy wrap contract: dual × primal_scale == particle-facing prior grads
+    np.testing.assert_allclose(scaled_dual, batched, rtol=1e-7, atol=1e-8)
+    np.testing.assert_allclose(scaled_dual, drift_prior, rtol=1e-7, atol=1e-8)
+
+
+def test_identity_drift_primal_scale_is_one():
+    """Without transforms, primal_scale ≡ 1 so dual ≡ particle-facing prior."""
+    with pm.Model() as model:
+        mu = pm.Normal("mu", 0.0, 1.0)
+        pm.Normal("y", mu=mu, sigma=1.0, observed=np.array([0.0, 0.5]))
+
+    mapper = make_point_mapper(model)
+    assert not mapper.has_transforms
+    particles = np.array([[0.1], [-0.2], [1.5]])
+    np.testing.assert_array_equal(
+        mapper.primal_scale(particles), np.ones_like(particles)
+    )
+
+    point_fn = compile_prior_gradient(model)
+    dual_rows = np.stack(
+        [np.asarray(point_fn(mapper.unravel(row)), dtype=float) for row in particles],
+        axis=0,
+    )
+    batched = np.asarray(
+        compile_batched_prior_grad(mapper, model)(particles), dtype=float
+    )
+    _wgf, drift_prior = compile_drift_for_logscore(mapper, model)(particles)
+
+    np.testing.assert_allclose(dual_rows, batched, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(batched, drift_prior, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(
+        dual_rows * mapper.primal_scale(particles),
+        drift_prior,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+
+
+def test_uniform_interval_noise_scale_and_sample_pro_feasible():
+    """Interval (Uniform) uses *rv.owner.inputs; noise_scale + sample_pro work."""
+    rng = np.random.default_rng(9)
+    data = rng.normal(0.5, 0.1, size=20)
+    with pm.Model() as model:
+        mu = pm.Uniform("mu", lower=0.0, upper=1.0)
+        pm.Normal("y", mu=mu, sigma=0.2, observed=data)
+
+    mapper = make_point_mapper(model)
+    assert mapper.has_transforms
+    base = mapper.ravel(mapper.start_point)
+    particles = base[None, :] + np.array([[-1.0], [0.0], [1.5]])
+    scale = mapper.noise_scale(particles)
+    assert scale.shape == particles.shape
+    assert np.all(np.isfinite(scale))
+    assert np.all(scale > 0.0)
+
+    dt = sample_pro(
+        model,
+        n_particles=8,
+        n_steps=5,
+        tune=2,
+        step_size=1e-3,
+        learning_rate=1.0,
+        random_seed=13,
+        include_log_likelihood=False,
+        include_sample_stats=False,
+    )
+    assert "mu" in dt.posterior
+    assert "mu_interval__" not in dt.posterior
+    vals = dt.posterior["mu"].values
+    assert np.all((vals > 0.0) & (vals < 1.0))
 
 
 def test_sample_pro_halfnormal_feasible_and_named():
