@@ -1,4 +1,4 @@
-"""Convert PrO particle traces to ArviZ DataTree output."""
+"""Convert predictively oriented particle traces to ArviZ DataTree output."""
 
 from __future__ import annotations
 
@@ -29,17 +29,47 @@ def _particles_to_posterior(
     model,
     mapper: PointMapper,
 ) -> dict[str, np.ndarray]:
-    """Split flat particles into named free-RV arrays with shape (draw, chain, *event)."""
+    """Split flat unconstrained particles into named free-RV arrays ``(draw, chain, *event)``.
+
+    Applies ``transform.backward`` so posterior keys are free-RV names with
+    constrained values when transforms are present.
+    """
     if particles.ndim != 3:
         raise ValueError(
             f"particles must be 3-D (n_retained, n_particles, flat); got shape {particles.shape}."
         )
 
-    free_names = {rv.name for rv in model.free_RVs}
     n_retained, n_particles, n_flat = particles.shape
     posterior: dict[str, np.ndarray] = {}
-    offset = 0
 
+    # Preferred path: mapper.slices partitions the flat particle axis into one
+    # slab per value_var. ``offset`` / ``size`` locate that slab; ``backward_slab``
+    # maps unconstrained coords → constrained free-RV values when a transform is
+    # present (identity otherwise). Keys are free-RV names for ArviZ.
+    if mapper.slices:
+        covered = 0
+        for sl in mapper.slices:
+            if sl.offset + sl.size > n_flat:
+                raise ValueError(
+                    f"slice for {sl.value_name!r} exceeds flat particle width {n_flat}."
+                )
+            slab = particles[..., sl.offset : sl.offset + sl.size]
+            primal = mapper.backward_slab(slab, sl)
+            posterior[sl.free_name] = np.asarray(
+                primal.reshape((n_retained, n_particles, *sl.shape)), dtype=float
+            )
+            covered = sl.offset + sl.size
+        if covered != n_flat:
+            raise ValueError(
+                f"point_map_info covers {covered} flat dims but particles have width {n_flat}."
+            )
+        return posterior
+
+    # Fallback when slices were not populated (should not happen via make_point_mapper):
+    # walk point_map_info with a running ``offset``, skip non-free entries, and
+    # reshape each unconstrained slab in place (no transform.backward).
+    free_names = {rv.name for rv in model.free_RVs}
+    offset = 0
     for name, shape, size, _dtype in mapper.point_map_info:
         if name not in free_names:
             offset += size
@@ -174,7 +204,7 @@ def _compute_sample_stats(
     fuse_stats: dict[str, np.ndarray] | None = None,
     mixture_log_predictive: dict[str, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
-    """PrO-specific diagnostics derived from retained particle clouds."""
+    """Diagnostics related to the interacting particle system."""
     n_retained, n_particles = particles.shape[:2]
     if n_retained == 0:
         return {}
@@ -245,7 +275,7 @@ def _attach_pro_coords(
     step_coord: np.ndarray | None,
     groups: Sequence[str] | None = None,
 ) -> None:
-    """Attach PrO ``draw`` and ``step`` coords to groups with a draw dimension."""
+    """Attach ``draw`` and ``step`` coords to groups with a draw dimension."""
     if groups is None:
         groups = list(dt.children)
     for name in groups:
@@ -366,7 +396,7 @@ def _pro_to_datatree(
     datatree_kwargs: dict[str, Any] | None = None,
     fuse_stats: dict[str, np.ndarray] | None = None,
 ) -> DataTree:
-    """Package retained PrO particles as an ArviZ DataTree.
+    """Package retained predictively oriented particles as an ArviZ DataTree.
 
     The sampler ndarray has shape ``(n_steps, n_particles, flat)`` on the
     normal :func:`~pymc_prop.sampler.run_sampler` path. ArviZ ``sample_dims``:

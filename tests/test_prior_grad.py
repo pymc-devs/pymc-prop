@@ -22,13 +22,16 @@ def test_prior_gradient_gaussian_closed_form():
     np.testing.assert_allclose(grad, expected, rtol=1e-6, atol=1e-8)
 
 
-def test_prior_gradient_rejects_halfnormal():
-    # implicit HalfNormal transform → require_unconstrained_free_rvs rejects
+def test_prior_gradient_accepts_halfnormal():
+    # HalfNormal uses LogTransform; mirror MVP allows it (jacobian=False default).
     with pm.Model() as model:
         pm.HalfNormal("sigma", sigma=1.0)
 
-    with pytest.raises(ValueError, match="native unconstrained"):
-        compile_prior_gradient(model)
+    mapper = make_point_mapper(model)
+    grad_fn = compile_prior_gradient(model)
+    grad = np.asarray(grad_fn(mapper.start_point), dtype=float)
+    assert grad.shape == (1,)
+    assert np.isfinite(grad).all()
 
 
 def test_prior_gradient_rejects_discrete():

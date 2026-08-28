@@ -92,7 +92,7 @@ def test_batched_observed_logp_score_matches_loop():
 
 
 def test_batched_prior_grad_matches_loop():
-    # batched log-prior gradient (prior term) == row-wise compile_prior_gradient
+    # unconstrained model: batched == row-wise compile_prior_gradient
     with pm.Model() as model:
         mu = pm.Normal("mu", mu=0.0, sigma=2.0)
         log_sigma = pm.Normal("log_sigma", mu=0.0, sigma=1.0)

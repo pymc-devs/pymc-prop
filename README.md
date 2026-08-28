@@ -73,8 +73,8 @@ Import from `pymc_prop`:
 
 **Conventions**
 
-- Particles live in PyMC’s unconstrained `value_vars` coordinates (via `PointMapper` / `DictToArrayBijection`).
-- For now, free RVs **must** be native unconstrained.
+- Particles live in PyMC’s dual `value_vars` coordinates (via `PointMapper` / `DictToArrayBijection`).
+- Elementwise constrained free RVs (`HalfNormal`, `Beta`, `Uniform`, …) use **mirror WGF**; simplex / Dirichlet not yet supported.
 - Observed log-probability is **elementwise** — one term per observation, not a single summed likelihood.
 - Log-score WGF interaction is summed over observations in compile; `learning_rate` (default `1.0`, paper's `\lambda_n`) scales it in `time_step`.
 - Log-score sampling requires **continuous** value variables.
@@ -84,6 +84,7 @@ Only `scoring_rule="log"` is supported in this version.
 ## Further reading
 
 - McLatchie, Chérief-Abdellatif, Frazier & Knoblauch (2025). [*Predictively Oriented Posteriors*](https://arxiv.org/abs/2510.01915). [arXiv:2510.01915](https://arxiv.org/abs/2510.01915) — primary reference for theory and notation.
+- Gu & Kim (2026). [*Mirror Langevin Dynamics*](https://arxiv.org/abs/2505.02621). [arXiv:2505.02621](https://arxiv.org/abs/2505.02621) — dual SDE / mirror noise for constrained parameters.
 - Sharrock & Nemeth (2025). [*Tuning-Free Sampling via Optimization on the Space of Probability Measures*](https://arxiv.org/abs/2510.25315). [arXiv:2510.25315](https://arxiv.org/abs/2510.25315) — FUSE adaptive step-size schedule (default in `sample_pro`).
 - [Yann McLatchie's blog tutorial](https://yannmclatchie.github.io/blog/posts/pro-tutorial/) — same WGF and particle picture in a misspecified Gaussian example; uses **MMD** and **JAX**. Helpful supplementary exposition.
 
