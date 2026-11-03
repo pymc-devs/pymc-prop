@@ -21,7 +21,7 @@ dependencies:
   - brotli=1.2.0=hed03a55_1
   - brotli-bin=1.2.0=hb03c661_1
   - bzip2=1.0.8=hda65f42_9
-  - ca-certificates=2026.5.20=hbd8a1cb_0
+  - ca-certificates=2026.10.19=hbd8a1cb_0
   - cachetools=6.2.6=pyhd8ed1ab_0
   - cairo=1.18.4=he90730b_1
   - cloudpickle=3.1.2=pyhcf101f3_1
@@ -159,7 +159,7 @@ dependencies:
   - pcre2=10.47=haa7fec5_0
   - pexpect=4.9.0=pyhd8ed1ab_1
   - pillow=12.2.0=py314h8ec4b1a_0
-  - pip=26.1.1=pyh145f28c_0
+  - pip=26.2.2=pyh145f28c_0
   - pixman=0.46.4=h54a6638_1
   - platformdirs=4.9.6=pyhcf101f3_0
   - pluggy=1.6.0=pyhf9edf01_1
