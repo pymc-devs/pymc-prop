@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List
+from typing import Callable, List
 
 import numpy as np
 
@@ -15,9 +15,10 @@ from pymc_prop.fuse import (
     fuse_adaptive_step,
     fuse_initial_step,
 )
-from pymc_prop.particles import initialize_particles, time_step
+from pymc_prop.particles import initialize_particles, time_step, scaled_drift
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
+from pymc_prop.diagnostics import compute_kgd, get_bandwidth, imq_kernel
 
 
 def run_sampler(
@@ -32,6 +33,10 @@ def run_sampler(
     random_seed: int | None,
     r_eps: float = 1e-5,
     fuse_diagnostics: dict[str, list[float]] | None = None,
+    flow_stats: dict[str, list[float]] | None = None,
+    kgd_interval: int | None = None,
+    kgd_bandwidth: float | None = None,
+    kgd_kernel: Callable | None = None,
 ) -> np.ndarray:
     """Run the predictively oriented particle simulation loop.
 
@@ -78,15 +83,32 @@ def run_sampler(
 
     retained: List[np.ndarray] = []
 
-    for step in range(tune + n_steps):
-        if drift_fn is not None:
-            wgf_grad, prior_grad = drift_fn(particles)
-        else:
-            assert wgf_fn is not None
-            wgf_grad = wgf_fn(particles)
-            assert batched_prior_grad_fn is not None
-            prior_grad = np.asarray(batched_prior_grad_fn(particles), dtype=float)
+    kgd_enabled = flow_stats is not None and kgd_interval is not None
+    resolved_kgd_bandwidth: float | None = None
+    if kgd_enabled:
+        assert kgd_interval is not None
+        initial_constrained = mapper.constrain(particles)
+        initial_diffs = initial_constrained[:, None, :] - initial_constrained[None, :, :]
+        initial_sq_dists = np.sum(initial_diffs**2, axis=-1)
+        resolved_kgd_bandwidth = get_bandwidth(initial_sq_dists, kgd_bandwidth)
 
+    def evaluate_gradients(current_particles: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate both gradient components at one particle cloud."""
+        if drift_fn is not None:
+            return drift_fn(current_particles)
+
+        assert wgf_fn is not None
+        assert batched_prior_grad_fn is not None
+        current_wgf_grad = wgf_fn(current_particles)
+        current_prior_grad = np.asarray(
+            batched_prior_grad_fn(current_particles), dtype=float
+        )
+        return current_wgf_grad, current_prior_grad
+
+    total_steps = tune + n_steps
+    wgf_grad, prior_grad = evaluate_gradients(particles)
+
+    for step in range(total_steps):
         if use_fuse:
             if fuse_state is None:
                 # t = 0: η_0 = r_ε, freeze reference half-step x_{1/2}
@@ -116,8 +138,43 @@ def run_sampler(
             particles, prior_grad, wgf_grad, step_size, learning_rate, rng, mapper
         )
 
+        kgd_due = (
+            kgd_enabled
+            and step >= tune
+            and (step - tune) % kgd_interval == 0
+        )
+        has_next_step = step + 1 < total_steps
+
+        # Evaluate at x[t+1]. These gradients give an aligned KGD for the
+        # updated cloud and are cached for the next Euler-Maruyama step.
+        if has_next_step or kgd_due:
+            next_wgf_grad, next_prior_grad = evaluate_gradients(particles)
+
+        if kgd_enabled and step >= tune:
+            assert flow_stats is not None
+            if kgd_due:
+                assert resolved_kgd_bandwidth is not None
+                potential_gradient = scaled_drift(
+                    next_wgf_grad, next_prior_grad, learning_rate
+                )
+                score = -potential_gradient
+                kernel_to_use = imq_kernel if kgd_kernel is None else kgd_kernel
+                kgd = compute_kgd(
+                    mapper.constrain(particles),
+                    score,
+                    kernel_fn=kernel_to_use,
+                    bandwidth=resolved_kgd_bandwidth,
+                )
+            else:
+                kgd = np.nan
+
+            flow_stats.setdefault("kgd", []).append(kgd)
+
         if step >= tune:
             retained.append(particles.copy())
+
+        if has_next_step:
+            wgf_grad, prior_grad = next_wgf_grad, next_prior_grad
 
     if retained:
         return np.stack(retained, axis=0)

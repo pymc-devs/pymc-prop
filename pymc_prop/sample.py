@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 import numpy as np
@@ -118,6 +118,9 @@ def sample_pro(
     include_log_likelihood: bool = True,
     include_observed_data: bool = True,
     include_sample_stats: bool = True,
+    kgd_interval: int | None = None,
+    kgd_bandwidth: float | None = None,
+    kgd_kernel: Callable | None = None,
     datatree_kwargs: dict[str, Any] | None = None,
 ) -> DataTree:
     """Run the predictively oriented (PrO) particle sampler on a PyMC model.
@@ -176,6 +179,17 @@ def sample_pro(
         Control which optional DataTree groups are populated. Set
         ``include_log_likelihood=False`` to skip the post-sampling logp pass
         when only particle trajectories are needed.
+    kgd_interval
+        Compute ``sample_stats.kgd`` on every given retained step.
+        ``None`` disables KGD. The score is evaluated at the retained,
+        post-update particle cloud and cached for the following sampler step.
+    kgd_bandwidth
+        Positive kernel denominator used directly in KGD. When omitted, it is
+        fixed before sampling using the initial particle cloud and the median
+        heuristic ``median(||x_i - x_j||²) / log(n_particles)``.
+    kgd_kernel
+        Kernel function used to evaluate KGD; defaults to :func:`~pymc_prop.diagnostics.imq_kernel`.
+        Can also be set to :func:`~pymc_prop.diagnostics.rbf_kernel` or a custom kernel function.
     datatree_kwargs
         Extra keyword arguments forwarded to the internal DataTree builder
         (e.g. ``name``). ``coords``, ``dims``, and ``include_*`` flags should
@@ -199,6 +213,30 @@ def sample_pro(
         raise ValueError("n_steps must be positive.")
     if tune < 0:
         raise ValueError("tune must be non-negative.")
+    if kgd_interval is not None:
+        if isinstance(kgd_interval, (bool, np.bool_)) or not isinstance(
+            kgd_interval, (int, np.integer)
+        ):
+            raise ValueError("kgd_interval must be a positive integer.")
+        if kgd_interval <= 0:
+            raise ValueError("kgd_interval must be a positive integer.")
+        if include_sample_stats is False:
+            raise ValueError(
+                "kgd_interval is set but include_sample_stats=False; "
+                "KGD diagnostics require sample_stats."
+            )
+    if kgd_bandwidth is not None:
+        if kgd_interval is None:
+            raise ValueError("kgd_bandwidth requires kgd_interval to be set.")
+        if not np.isfinite(kgd_bandwidth) or kgd_bandwidth <= 0:
+            raise ValueError(
+                "kgd_bandwidth must be finite and positive when provided."
+            )
+    if kgd_kernel is not None:
+        if kgd_interval is None:
+            raise ValueError("kgd_kernel requires kgd_interval to be set.")
+        if not callable(kgd_kernel):
+            raise ValueError("kgd_kernel must be a callable kernel function.")
     if step_size is None:
         if r_eps <= 0:
             raise ValueError(
@@ -219,8 +257,12 @@ def sample_pro(
 
     mapper = make_point_mapper(model)
 
+    flow_stats: dict[str, list[float]] | None = (
+        {} if include_sample_stats and kgd_interval is not None else None
+    )
+
     fuse_diagnostics: dict[str, list[float]] | None = (
-        {} if step_size is None else None
+        {} if include_sample_stats and step_size is None else None
     )
     particles = run_sampler(
         model=model,
@@ -234,6 +276,10 @@ def sample_pro(
         random_seed=random_seed,
         r_eps=r_eps,
         fuse_diagnostics=fuse_diagnostics,
+        flow_stats=flow_stats,
+        kgd_interval=kgd_interval,
+        kgd_bandwidth=kgd_bandwidth,
+        kgd_kernel=kgd_kernel,
     )
 
     fuse_stats = (
@@ -255,6 +301,7 @@ def sample_pro(
         include_sample_stats=include_sample_stats,
         datatree_kwargs=datatree_kwargs,
         fuse_stats=fuse_stats,
+        flow_stats=flow_stats,
     )
 
     return dt

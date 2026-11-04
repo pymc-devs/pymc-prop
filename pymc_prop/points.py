@@ -117,6 +117,22 @@ class PointMapper:
             out[i] = np.asarray(sl.backward_fn(flat[i]), dtype=float).reshape(sl.size)
         return out.reshape(*leading, sl.size)
 
+    def constrain(self, particles: np.ndarray) -> np.ndarray:
+        """Map flat unconstrained particles ``(..., d)`` to flat constrained values.
+
+        The layout is unchanged (each slab keeps its ``offset`` / ``size``), so
+        the result lines up with the constrained-space gradients returned by
+        the drift (:meth:`primal_scale`). Identity when no transform is present.
+        """
+        particles = np.asarray(particles, dtype=float)
+        if not self.has_transforms:
+            return particles
+        out = np.empty_like(particles)
+        for sl in self.slices:
+            window = slice(sl.offset, sl.offset + sl.size)
+            out[..., window] = self.backward_slab(particles[..., window], sl)
+        return out
+
 
 def flat_to_value_vars(
     flat_particles: pt.TensorVariable,
