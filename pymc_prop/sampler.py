@@ -87,7 +87,8 @@ def run_sampler(
     resolved_kgd_bandwidth: float | None = None
     if kgd_enabled:
         assert kgd_interval is not None
-        initial_diffs = particles[:, None, :] - particles[None, :, :]
+        initial_constrained = mapper.constrain(particles)
+        initial_diffs = initial_constrained[:, None, :] - initial_constrained[None, :, :]
         initial_sq_dists = np.sum(initial_diffs**2, axis=-1)
         resolved_kgd_bandwidth = get_bandwidth(initial_sq_dists, kgd_bandwidth)
 
@@ -159,7 +160,7 @@ def run_sampler(
                 score = -potential_gradient
                 kernel_to_use = imq_kernel if kgd_kernel is None else kgd_kernel
                 kgd = compute_kgd(
-                    particles,
+                    mapper.constrain(particles),
                     score,
                     kernel_fn=kernel_to_use,
                     bandwidth=resolved_kgd_bandwidth,

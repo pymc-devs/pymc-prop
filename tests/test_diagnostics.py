@@ -5,6 +5,8 @@ import pytest
 import pymc_prop.sampler as sampler_module
 from pymc_prop.diagnostics import compute_kgd, get_bandwidth, imq_kernel, rbf_kernel
 from pymc_prop.sample import sample_pro
+from pymc_prop.points import make_point_mapper
+from pymc_prop.scoring import LogScore, ScoringRule
 
 
 def test_imq_kernel_components():
@@ -235,3 +237,129 @@ def test_sample_pro_records_kgd_with_custom_kernel():
     assert np.all(np.isfinite(kgd_imq))
     assert np.all(np.isfinite(kgd_rbf))
     assert not np.allclose(kgd_imq, kgd_rbf)
+
+
+def _mixed_transform_model():
+    """Identity, log and logodds slabs, with ``loc`` first to exercise offsets."""
+    with pm.Model() as model:
+        loc = pm.Normal("loc", mu=0.0, sigma=1.0)
+        scale = pm.Gamma("scale", alpha=5.0, beta=1.0)
+        prob = pm.Beta("prob", alpha=2.0, beta=3.0)
+        pm.Normal("y", mu=loc, sigma=1.0, observed=np.array([0.0, 0.5]))
+    return model
+
+
+def _prior_score(posterior_draw):
+    """Constrained-space prior score of the mixed model (jacobian-free potential)."""
+    loc = posterior_draw["loc"]
+    scale = posterior_draw["scale"]
+    prob = posterior_draw["prob"]
+    return np.stack(
+        [-loc, 4.0 / scale - 1.0, 1.0 / prob - 2.0 / (1.0 - prob)], axis=1
+    )
+
+
+def test_kgd_uses_constrained_particles_and_score():
+    """Check that KGD is computed using constrained-space particles and prior score."""
+    model = _mixed_transform_model()
+    bandwidth = 3.0
+
+    dt = sample_pro(
+        model=model,
+        n_particles=16,
+        n_steps=5,
+        tune=2,
+        step_size=1e-3,
+        learning_rate=1e-10,
+        random_seed=3,
+        include_log_likelihood=False,
+        kgd_interval=1,
+        kgd_bandwidth=bandwidth,
+    )
+
+    posterior = dt.posterior
+    assert posterior["scale"].min() > 0
+    for draw in range(posterior.sizes["draw"]):
+        constrained = {
+            name: posterior[name].isel(draw=draw).values
+            for name in ("loc", "scale", "prob")
+        }
+        particles = np.stack(
+            [constrained["loc"], constrained["scale"], constrained["prob"]], axis=1
+        )
+        expected = compute_kgd(
+            particles, _prior_score(constrained), bandwidth=bandwidth
+        )
+        actual = dt.sample_stats["kgd"].isel(chain=0, draw=draw).item()
+        np.testing.assert_allclose(actual, expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize("step_size", [1e-3, None])
+def test_kgd_does_not_change_particle_trajectories(step_size):
+    model = _mixed_transform_model()
+    kwargs = dict(
+        model=model,
+        n_particles=8,
+        n_steps=6,
+        tune=3,
+        step_size=step_size,
+        random_seed=11,
+        include_log_likelihood=False,
+    )
+
+    baseline = sample_pro(**kwargs)
+    with_kgd = sample_pro(kgd_interval=2, **kwargs)
+
+    for name in baseline.posterior.data_vars:
+        np.testing.assert_array_equal(
+            with_kgd.posterior[name].values, baseline.posterior[name].values
+        )
+    if step_size is None:
+        np.testing.assert_array_equal(
+            with_kgd.sample_stats["fuse_step_size"].values,
+            baseline.sample_stats["fuse_step_size"].values,
+        )
+
+
+def test_kgd_matches_between_drift_and_wgf_code_paths():
+    class WgfOnly(ScoringRule):
+        def compile_wgf(self, model, mapper):
+            return LogScore().compile_wgf(model, mapper)
+
+    model = _mixed_transform_model()
+    kwargs = dict(
+        model=model,
+        n_particles=8,
+        n_steps=5,
+        tune=2,
+        step_size=1e-3,
+        random_seed=13,
+        include_log_likelihood=False,
+        kgd_interval=2,
+    )
+
+    fused = sample_pro(**kwargs)
+    split = sample_pro(scoring_rule=WgfOnly(), **kwargs)
+
+    for name in fused.posterior.data_vars:
+        np.testing.assert_allclose(
+            split.posterior[name].values, fused.posterior[name].values
+        )
+    np.testing.assert_allclose(
+        split.sample_stats["kgd"].values,
+        fused.sample_stats["kgd"].values,
+        equal_nan=True,
+    )
+
+
+def test_point_mapper_constrain_matches_posterior_layout():
+    model = _mixed_transform_model()
+    mapper = make_point_mapper(model)
+    rng = np.random.default_rng(0)
+    flat = rng.normal(size=(5, 3))
+
+    constrained = mapper.constrain(flat)
+
+    np.testing.assert_allclose(constrained[:, 0], flat[:, 0])
+    np.testing.assert_allclose(constrained[:, 1], np.exp(flat[:, 1]))
+    np.testing.assert_allclose(constrained[:, 2], 1.0 / (1.0 + np.exp(-flat[:, 2])))
