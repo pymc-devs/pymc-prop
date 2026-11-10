@@ -4,11 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Dict
+from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
-
 from pymc.blocking import DictToArrayBijection, RaveledVars
 from pymc.model import modelcontext
 
@@ -27,7 +26,7 @@ __all__ = [
 ]
 
 
-PointType = Dict[str, np.ndarray]
+PointType = dict[str, np.ndarray]
 
 
 @dataclass(frozen=True)
@@ -172,9 +171,7 @@ def _build_slices(model, point_map_info) -> tuple[TransformSlice, ...]:
     for name, shape, size, _dtype in point_map_info:
         rv = value_to_rv.get(name)
         if rv is None:
-            raise ValueError(
-                f"value var {name!r} in point_map_info has no matching free RV."
-            )
+            raise ValueError(f"value var {name!r} in point_map_info has no matching free RV.")
         transform = model.rvs_to_transforms.get(rv)
         backward_fn = None
         if transform is not None:
@@ -213,8 +210,11 @@ def make_point_mapper(model=None) -> PointMapper:
     primal_fn = None
     if ljd_fn is not None:
         # Derive both scales from ljd_fn so relation is explicit and local:
-        noise_fn = lambda particles: np.exp(-0.5 * ljd_fn(particles))  # exp(-0.5 * ljd)
-        primal_fn = lambda particles: np.exp(-1.0 * ljd_fn(particles))  # noise_scale ** 2
+        def noise_fn(particles):
+            return np.exp(-0.5 * ljd_fn(particles))  # exp(-0.5 * ljd)
+
+        def primal_fn(particles):
+            return np.exp(-1.0 * ljd_fn(particles))  # noise_scale ** 2
 
     return PointMapper(
         start_point=ordered_point,

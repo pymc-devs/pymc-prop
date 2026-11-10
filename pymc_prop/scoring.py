@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 
 from pymc_prop.compile import compile_drift_for_logscore
 from pymc_prop.points import PointMapper
-
 
 DriftReturn = tuple[np.ndarray, np.ndarray]
 

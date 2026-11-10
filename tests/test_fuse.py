@@ -10,9 +10,9 @@ from pymc_prop.fuse import (
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
     fuse_adaptive_step,
-    fuse_initial_step,
     fuse_distance,
     fuse_grad_energy,
+    fuse_initial_step,
     fuse_step_size,
 )
 from pymc_prop.particles import raw_drift, scaled_drift, time_step
@@ -58,7 +58,7 @@ def _simulate_fuse_forward_reference(
         noise = np.sqrt(2.0 * lambda_n * eta) * rng.standard_normal(particles.shape)
         particles = half + noise
         d_next = fuse_distance(reference_half_step, half)
-        r_bar = max(r_bar, max(r_eps, d_next))
+        r_bar = max(r_bar, r_eps, d_next)
         trajectory.append(particles.copy())
 
     return np.stack(trajectory, axis=0)
@@ -78,12 +78,8 @@ def _simulate_fuse_pymc_helpers(
 
     wgf_grad = -_gaussian_target_drift(particles)
     # t = 0 initial schedule step, then Euler-Maruyama step
-    eta, fuse_state, _ = fuse_initial_step(
-        particles, wgf_grad, prior_grad, learning_rate, r_eps
-    )
-    particles = time_step(
-        particles, prior_grad, wgf_grad, eta, learning_rate, rng
-    )
+    eta, fuse_state, _ = fuse_initial_step(particles, wgf_grad, prior_grad, learning_rate, r_eps)
+    particles = time_step(particles, prior_grad, wgf_grad, eta, learning_rate, rng)
     trajectory.append(particles.copy())
 
     for _ in range(num_steps - 1):
@@ -97,9 +93,7 @@ def _simulate_fuse_pymc_helpers(
             fuse_state,
             r_eps,
         )
-        particles = time_step(
-            particles, prior_grad, wgf_grad, eta, learning_rate, rng
-        )
+        particles = time_step(particles, prior_grad, wgf_grad, eta, learning_rate, rng)
         trajectory.append(particles.copy())
 
     return np.stack(trajectory, axis=0)
@@ -133,9 +127,7 @@ def test_fuse_raw_vs_scaled_learning_rate():
     scaled = scaled_drift(wgf_grad, prior_grad, learning_rate)
     assert not np.allclose(raw, scaled)
 
-    _, fuse_state, _ = fuse_initial_step(
-        particles, wgf_grad, prior_grad, learning_rate, r_eps
-    )
+    _, fuse_state, _ = fuse_initial_step(particles, wgf_grad, prior_grad, learning_rate, r_eps)
     eta, fuse_state, _ = fuse_adaptive_step(
         particles, wgf_grad, prior_grad, learning_rate, fuse_state, r_eps
     )
@@ -168,16 +160,12 @@ def test_fuse_step_size_dispatches_initial_and_adaptive():
         particles, wgf_grad, prior_grad, learning_rate, None, r_eps
     )
     assert eta_init == pytest.approx(eta_disp)
-    np.testing.assert_allclose(
-        state_init.reference_half_step, state_disp.reference_half_step
-    )
+    np.testing.assert_allclose(state_init.reference_half_step, state_disp.reference_half_step)
     assert state_init.r_bar == pytest.approx(state_disp.r_bar)
     assert state_init.grad_energy == pytest.approx(state_disp.grad_energy)
     assert diag_init.step_size == pytest.approx(diag_disp.step_size)
     assert diag_init.gradient_energy == pytest.approx(diag_disp.gradient_energy)
-    assert diag_init.half_step_distance_sq == pytest.approx(
-        diag_disp.half_step_distance_sq
-    )
+    assert diag_init.half_step_distance_sq == pytest.approx(diag_disp.half_step_distance_sq)
 
     eta_adapt, state_adapt, diag_adapt = fuse_adaptive_step(
         particles, wgf_grad, prior_grad, learning_rate, state_init, r_eps

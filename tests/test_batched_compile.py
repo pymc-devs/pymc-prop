@@ -1,8 +1,9 @@
+from typing import cast
+
 import numpy as np
 import pymc as pm
-from pytensor.compile.maker import function as pytensor_function
 import pytensor.tensor as pt
-from typing import cast
+from pytensor.compile.maker import function as pytensor_function
 
 from pymc_prop.compile import (
     compile_batched_observed_logp,
@@ -108,7 +109,9 @@ def test_batched_prior_grad_matches_loop():
     particles = base[None, :] + 0.05 * rng.standard_normal((6, base.size))
 
     batched = np.asarray(batched_grad_fn(particles), dtype=float)
-    looped = np.stack([np.asarray(single_grad_fn(mapper.unravel(p)), dtype=float) for p in particles], axis=0)
+    looped = np.stack(
+        [np.asarray(single_grad_fn(mapper.unravel(p)), dtype=float) for p in particles], axis=0
+    )
 
     np.testing.assert_allclose(batched, looped, rtol=1e-7, atol=1e-8)
 
@@ -183,7 +186,9 @@ def test_batched_observed_logp_for_rv_matches_loop():
         batched_fn = compile_batched_observed_logp_for_rv(model, mapper, rv)
         logp_terms = model.logp(vars=[rv], sum=False)
         logp_vec = pt.flatten(pt.add(*logp_terms))
-        point_fn = model.compile_fn(inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore")
+        point_fn = model.compile_fn(
+            inputs=model.value_vars, outs=logp_vec, on_unused_input="ignore"
+        )
 
         logp_loop = []
         for particle in particles:

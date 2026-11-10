@@ -7,18 +7,16 @@ from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
-from pytensor.graph.replace import graph_replace
-from pytensor.scan import scan
-
 from pymc.model import modelcontext
 from pymc.pytensorf import gradient, jacobian
+from pytensor.graph.replace import graph_replace
+from pytensor.scan import scan
 
 from pymc_prop.points import (
     PointMapper,
     flat_to_value_vars,
     require_mirror_compatible_transforms,
 )
-
 
 PointFunc = Callable[[dict[str, np.ndarray]], np.ndarray]
 FlatGradFunc = Callable[[np.ndarray], np.ndarray]
@@ -106,9 +104,7 @@ def compile_prior_gradient(model=None, *, jacobian: bool | None = None) -> Point
         raise ValueError("Model has no free random variables.")
     require_mirror_compatible_transforms(model)
 
-    has_transforms = any(
-        model.rvs_to_transforms.get(rv) is not None for rv in model.free_RVs
-    )
+    has_transforms = any(model.rvs_to_transforms.get(rv) is not None for rv in model.free_RVs)
     if jacobian is None:
         jacobian = not has_transforms
 
@@ -256,9 +252,7 @@ def _batched_prior_grad_graph(
 
     # vectorised evaluation over the particle batch
     vec_fn = pt.vectorize(
-        lambda particle: _core_prior_grad(
-            particle, model, mapper, jacobian_terms=jacobian_terms
-        ),
+        lambda particle: _core_prior_grad(particle, model, mapper, jacobian_terms=jacobian_terms),
         signature="(d)->(d)",
     )
     return vec_fn(particles)
@@ -310,7 +304,9 @@ def compile_batched_observed_logp_for_rv(
     return compile_batched_observed_logp(model, mapper, observed_rvs=[rv])
 
 
-def compile_batched_observed_logp_score(model=None, mapper: PointMapper | None = None) -> BatchedLogpScoreFunc:
+def compile_batched_observed_logp_score(
+    model=None, mapper: PointMapper | None = None
+) -> BatchedLogpScoreFunc:
     """Compile batched elementwise observed logp and score w.r.t. unconstrained ``value_vars``.
 
     Uses vectorized batching when possible; otherwise ``scan`` at compile time.
@@ -423,9 +419,10 @@ def compile_drift_for_logscore(
         = \\underbrace{\\frac{p_{\\vartheta^{(j)}}(x_i)}{q_{-j}(x_i)}}_{w_j(x_i)}
           \\cdot \\nabla_\\vartheta \\log p_{\\vartheta^{(j)}}(x_i).
 
-    Computing :math:`q_{-j}(x_i) = \\frac{1}{p-1} \\sum_{\\ell \\neq j} p_{\\vartheta^{(\\ell)}}(x_i)`
-    directly in probability space is numerically unstable so instead we work in log-space and use the
-    log-sum-exp trick. Define the particle-wise maximum density as
+    Computing
+    :math:`q_{-j}(x_i) = \\frac{1}{p-1} \\sum_{\\ell \\neq j} p_{\\vartheta^{(\\ell)}}(x_i)`
+    directly in probability space is numerically unstable so instead we work in log-space and
+    use the log-sum-exp trick. Define the particle-wise maximum density as
 
     .. math::
 
@@ -520,7 +517,9 @@ def compile_drift_for_logscore(
     particles = pt.matrix("particles")
 
     def build(use_scan: bool) -> tuple[pt.TensorVariable, pt.TensorVariable, pt.TensorVariable]:
-        logp, score = _batched_observed_logp_score_graph(particles, model, mapper, use_scan=use_scan)
+        logp, score = _batched_observed_logp_score_graph(
+            particles, model, mapper, use_scan=use_scan
+        )
         prior_grad = _batched_prior_grad_graph(
             particles, model, mapper, jacobian_terms=jacobian, use_scan=use_scan
         )
@@ -558,8 +557,6 @@ def compile_drift_for_logscore(
     def drift(particles_np: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         wgf_out, prior_out = raw_fn(particles_np)
         scale = mapper.primal_scale(particles_np)
-        return np.asarray(wgf_out, dtype=float) * scale, np.asarray(
-            prior_out, dtype=float
-        ) * scale
+        return np.asarray(wgf_out, dtype=float) * scale, np.asarray(prior_out, dtype=float) * scale
 
     return drift

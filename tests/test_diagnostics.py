@@ -4,8 +4,8 @@ import pytest
 
 import pymc_prop.sampler as sampler_module
 from pymc_prop.diagnostics import compute_kgd, get_bandwidth, imq_kernel, rbf_kernel
-from pymc_prop.sample import sample_pro
 from pymc_prop.points import make_point_mapper
+from pymc_prop.sample import sample_pro
 from pymc_prop.scoring import LogScore, ScoringRule
 
 
@@ -14,15 +14,11 @@ def test_imq_kernel_components():
     dimension = 3
     bandwidth = 1.5
 
-    kernel, cross_coeff, trace_term = imq_kernel(
-        sq_dists, dimension, bandwidth
-    )
+    kernel, cross_coeff, trace_term = imq_kernel(sq_dists, dimension, bandwidth)
     expected_kernel = (1.0 + sq_dists / bandwidth) ** -0.5
 
     np.testing.assert_allclose(kernel, expected_kernel)
-    np.testing.assert_allclose(
-        cross_coeff, expected_kernel**3 / bandwidth
-    )
+    np.testing.assert_allclose(cross_coeff, expected_kernel**3 / bandwidth)
     np.testing.assert_allclose(
         trace_term,
         dimension * expected_kernel**3 / bandwidth
@@ -59,21 +55,11 @@ def test_compute_kgd_matches_sqrt_direct_v_statistic():
             difference = x_i - x_j
             squared_difference = difference**2
             kernel = (1.0 + squared_difference / bandwidth) ** -0.5
-            cross_terms = (
-                (score[i, 0] - score[j, 0])
-                * difference
-                * kernel**3
-                / bandwidth
-            )
+            cross_terms = (score[i, 0] - score[j, 0]) * difference * kernel**3 / bandwidth
             derivative_trace = (
-                kernel**3 / bandwidth
-                - 3.0 * squared_difference * kernel**5 / bandwidth**2
+                kernel**3 / bandwidth - 3.0 * squared_difference * kernel**5 / bandwidth**2
             )
-            stein_kernel[i, j] = (
-                score[i, 0] * score[j, 0] * kernel
-                + cross_terms
-                + derivative_trace
-            )
+            stein_kernel[i, j] = score[i, 0] * score[j, 0] * kernel + cross_terms + derivative_trace
 
     actual = compute_kgd(particles, score, bandwidth=bandwidth)
     np.testing.assert_allclose(actual, np.sqrt(np.mean(stein_kernel)))
@@ -107,12 +93,8 @@ def test_normal_target_has_lower_kgd_than_wrong_score():
     target_score = -particles
     shifted_score = -(particles - 2.0)
 
-    target_kgd = compute_kgd(
-        particles, target_score, bandwidth=bandwidth
-    )
-    shifted_kgd = compute_kgd(
-        particles, shifted_score, bandwidth=bandwidth
-    )
+    target_kgd = compute_kgd(particles, target_score, bandwidth=bandwidth)
+    shifted_kgd = compute_kgd(particles, shifted_score, bandwidth=bandwidth)
 
     assert target_kgd < shifted_kgd
 
@@ -254,9 +236,7 @@ def _prior_score(posterior_draw):
     loc = posterior_draw["loc"]
     scale = posterior_draw["scale"]
     prob = posterior_draw["prob"]
-    return np.stack(
-        [-loc, 4.0 / scale - 1.0, 1.0 / prob - 2.0 / (1.0 - prob)], axis=1
-    )
+    return np.stack([-loc, 4.0 / scale - 1.0, 1.0 / prob - 2.0 / (1.0 - prob)], axis=1)
 
 
 def test_kgd_uses_constrained_particles_and_score():
@@ -281,15 +261,12 @@ def test_kgd_uses_constrained_particles_and_score():
     assert posterior["scale"].min() > 0
     for draw in range(posterior.sizes["draw"]):
         constrained = {
-            name: posterior[name].isel(draw=draw).values
-            for name in ("loc", "scale", "prob")
+            name: posterior[name].isel(draw=draw).values for name in ("loc", "scale", "prob")
         }
         particles = np.stack(
             [constrained["loc"], constrained["scale"], constrained["prob"]], axis=1
         )
-        expected = compute_kgd(
-            particles, _prior_score(constrained), bandwidth=bandwidth
-        )
+        expected = compute_kgd(particles, _prior_score(constrained), bandwidth=bandwidth)
         actual = dt.sample_stats["kgd"].isel(chain=0, draw=draw).item()
         np.testing.assert_allclose(actual, expected, rtol=1e-5)
 
@@ -342,9 +319,7 @@ def test_kgd_matches_between_drift_and_wgf_code_paths():
     split = sample_pro(scoring_rule=WgfOnly(), **kwargs)
 
     for name in fused.posterior.data_vars:
-        np.testing.assert_allclose(
-            split.posterior[name].values, fused.posterior[name].values
-        )
+        np.testing.assert_allclose(split.posterior[name].values, fused.posterior[name].values)
     np.testing.assert_allclose(
         split.sample_stats["kgd"].values,
         fused.sample_stats["kgd"].values,

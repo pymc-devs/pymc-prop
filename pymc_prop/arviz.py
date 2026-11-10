@@ -8,11 +8,11 @@ from typing import Any
 import numpy as np
 import pymc
 import xarray as xr
-from scipy.special import logsumexp
 from arviz_base import from_dict
 from arviz_base.base import dict_to_dataset, make_attrs
 from pymc.backends.arviz import coords_and_dims_for_inferencedata
 from pymc.model import modelcontext
+from scipy.special import logsumexp
 from xarray import DataTree
 
 from pymc_prop.compile import compile_batched_observed_logp_for_rv
@@ -75,9 +75,7 @@ def _particles_to_posterior(
             offset += size
             continue
         if offset + size > n_flat:
-            raise ValueError(
-                f"point_map_info for {name!r} exceeds flat particle width {n_flat}."
-            )
+            raise ValueError(f"point_map_info for {name!r} exceeds flat particle width {n_flat}.")
         slab = particles[..., offset : offset + size]
         posterior[name] = np.asarray(slab.reshape((n_retained, n_particles, *shape)), dtype=float)
         offset += size
@@ -160,8 +158,8 @@ def _compute_mixture_log_predictive(
 ) -> dict[str, np.ndarray]:
     """Empirical mixture log predictive log p_{hat Q}(y) over uniform particle weights."""
     mixture: dict[str, np.ndarray] = {}
-    for name, ll in log_likelihood.items():
-        ll = np.asarray(ll, dtype=float)
+    for name, values in log_likelihood.items():
+        ll = np.asarray(values, dtype=float)
         n_particles = ll.shape[1]
         mixture[name] = logsumexp(ll, axis=1) - np.log(n_particles)
     return mixture
@@ -304,7 +302,7 @@ def _mixture_remix_forward_dataset(
 
     For each retained draw index *d*, independently resample particle ``chain``
     per observation element from ``grid.isel(draw=d)`` -- a marginal mixture at
-    each :math:`Q_t`. Output shape is ``(draw, *obs)`` with ``sample_dims=["draw"]`` 
+    each :math:`Q_t`. Output shape is ``(draw, *obs)`` with ``sample_dims=["draw"]``
     and no ``chain`` dimension.
     """
     if grid.sizes.get("draw", 0) == 0 or grid.sizes.get("chain", 0) == 0:
@@ -320,7 +318,9 @@ def _mixture_remix_forward_dataset(
     indexing_dims = ["draw", *obs_dims]
     chain_da = xr.DataArray(random_chains, dims=indexing_dims)
     draw_da = xr.DataArray(
-        np.broadcast_to(np.arange(n_draw, dtype=int).reshape((-1,) + (1,) * len(obs_dims)), target_shape),
+        np.broadcast_to(
+            np.arange(n_draw, dtype=int).reshape((-1,) + (1,) * len(obs_dims)), target_shape
+        ),
         dims=indexing_dims,
     )
 
@@ -335,9 +335,7 @@ def _mixture_remix_forward_dataset(
     }
     for dim in obs_dims:
         remixed_coords[dim] = (
-            grid.coords[dim].values
-            if dim in grid.coords
-            else np.arange(grid.sizes[dim], dtype=int)
+            grid.coords[dim].values if dim in grid.coords else np.arange(grid.sizes[dim], dtype=int)
         )
 
     attrs = make_attrs(inference_library=pymc, sample_dims=_MIXTURE_SAMPLE_DIMS)
@@ -392,7 +390,7 @@ def _pro_to_datatree(
     model=None,
     mapper: PointMapper,
     tune: int,
-    learning_rate: float,   
+    learning_rate: float,
     coords: dict[str, Any] | None = None,
     dims: dict[str, list[str]] | None = None,
     include_log_likelihood: bool = True,
@@ -412,7 +410,7 @@ def _pro_to_datatree(
     model = modelcontext(model)
     n_retained, n_particles = particles.shape[:2]
     draw_coord = np.arange(n_retained, dtype=int)
-    step_coord = (np.arange(tune, tune + n_retained, dtype=int) if n_retained > 0 else None)
+    step_coord = np.arange(tune, tune + n_retained, dtype=int) if n_retained > 0 else None
 
     posterior = _particles_to_posterior(particles, model, mapper)
     merged_coords = _merged_coords(model, coords)

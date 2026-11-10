@@ -3,8 +3,8 @@ import pymc as pm
 import pytest
 from pymc.exceptions import SamplingError
 
-from pymc_prop.points import make_point_mapper
 from pymc_prop.particles import _init_prior, initialize_particles
+from pymc_prop.points import make_point_mapper
 from pymc_prop.sample import sample_pro
 from pymc_prop.sampler import run_sampler
 from pymc_prop.scoring import LogScore
