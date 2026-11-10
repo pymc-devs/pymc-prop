@@ -226,5 +226,5 @@ dependencies:
   - zlib-ng=2.3.3=hceb46e0_1
   - zstd=1.5.7=hb78ec9c_6
   - pip:
-      - pymc-prop==0.0.0
+      - pymc-prop==0.0.1
 prefix: /home/advaitam/miniconda3/envs/pymc-dev-prop
