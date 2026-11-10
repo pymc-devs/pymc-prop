@@ -1,4 +1,4 @@
-"""Public sampling entry for predictively oriented (PrO) posteriors (PyMC-style ``sample`` module)."""
+"""Public sampling entry for predictively oriented (PrO) posteriors (PyMC-style ``sample``)."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def sample_posterior_predictive_pro(
     on the full retained ``dt.posterior`` cloud (``sample_dims=["draw", "chain"]``),
     then remixes it into draw-aligned mixture posterior predictive draws. Calling
     :func:`pymc.sample_posterior_predictive` on ``sample_pro`` output without
-    ``sample_dims=["draw", "chain"]`` swaps the ``draw`` / ``chain`` axes on 
+    ``sample_dims=["draw", "chain"]`` swaps the ``draw`` / ``chain`` axes on
     multi-draw traces. Use this helper instead.
 
     The exported ``posterior_predictive`` (or ``predictions``) group has shape
@@ -229,9 +229,7 @@ def sample_pro(
         if kgd_interval is None:
             raise ValueError("kgd_bandwidth requires kgd_interval to be set.")
         if not np.isfinite(kgd_bandwidth) or kgd_bandwidth <= 0:
-            raise ValueError(
-                "kgd_bandwidth must be finite and positive when provided."
-            )
+            raise ValueError("kgd_bandwidth must be finite and positive when provided.")
     if kgd_kernel is not None:
         if kgd_interval is None:
             raise ValueError("kgd_kernel requires kgd_interval to be set.")
@@ -239,9 +237,7 @@ def sample_pro(
             raise ValueError("kgd_kernel must be a callable kernel function.")
     if step_size is None:
         if r_eps <= 0:
-            raise ValueError(
-                "r_eps must be positive when step_size is None (adaptive schedule)."
-            )
+            raise ValueError("r_eps must be positive when step_size is None (adaptive schedule).")
     elif step_size <= 0:
         raise ValueError("step_size must be positive.")
     if learning_rate <= 0:

@@ -1,11 +1,9 @@
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import numpy as np
 
 
-def get_bandwidth(
-    sq_dists: np.ndarray, bandwidth: Optional[float] = None
-) -> float:
+def get_bandwidth(sq_dists: np.ndarray, bandwidth: float | None = None) -> float:
     """Return the kernel denominator ``h``.
 
     An explicit ``bandwidth`` is used directly. Otherwise, ``h`` is selected
@@ -23,9 +21,10 @@ def get_bandwidth(
     bandwidth = median_sq / np.log(n_particles) if median_sq > 0 else 1.0
     return max(float(bandwidth), 1e-12)
 
+
 def rbf_kernel(
     sq_dists: np.ndarray, d: int, bandwidth: float
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes components for the Gaussian RBF kernel
     ``K(x, y) = exp(-||x-y||^2 / bandwidth)``.
@@ -33,19 +32,18 @@ def rbf_kernel(
     Returns: (K, cross_coeff, trace_term)
     """
     K = np.exp(-sq_dists / bandwidth)
-    
+
     # -2 * f'(r^2)
     cross_coeff = (2.0 / bandwidth) * K
     # -2d * f'(r^2) - 4r^2 * f''(r^2)
-    trace_term = K * (
-        (2.0 * d / bandwidth) - (4.0 / bandwidth**2) * sq_dists
-    )
-    
+    trace_term = K * ((2.0 * d / bandwidth) - (4.0 / bandwidth**2) * sq_dists)
+
     return K, cross_coeff, trace_term
+
 
 def imq_kernel(
     sq_dists: np.ndarray, d: int, bandwidth: float
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Computes components for the inverse multi-quadric kernel
     ``K(x, y) = (1 + ||x-y||^2 / bandwidth)^(-1/2)``.
@@ -53,18 +51,19 @@ def imq_kernel(
     Returns: (K, cross_coeff, trace_term)
     """
     K = (1.0 + sq_dists / bandwidth) ** (-0.5)
-    
+
     # Precompute powers of K to avoid repeated expensive operations
-    K2 = K*K
-    K3 = K2*K
-    K5 = K2*K3
-    
+    K2 = K * K
+    K3 = K2 * K
+    K5 = K2 * K3
+
     # -2 * f'(r^2)
     cross_coeff = (1.0 / bandwidth) * K3
     # -2d * f'(r^2) - 4r^2 * f''(r^2)
     trace_term = (d / bandwidth) * K3 - (3.0 / bandwidth**2) * K5 * sq_dists
-    
+
     return K, cross_coeff, trace_term
+
 
 def compute_kgd(
     particles: np.ndarray,
@@ -87,24 +86,24 @@ def compute_kgd(
     N, d = particles.shape
     if N <= 1:
         return 0.0
-        
+
     # diffs shape: (N, N, d) -> diffs[j, l] = x_j - x_l
-    diffs = particles[:, None, :] - particles[None, :, :]  
-    sq_dists = np.sum(diffs ** 2, axis=-1)                
-    
+    diffs = particles[:, None, :] - particles[None, :, :]
+    sq_dists = np.sum(diffs**2, axis=-1)
+
     K, cross_coeff, trace_term = kernel_fn(sq_dists, d, bandwidth)
-    
+
     term1 = (score @ score.T) * K
-    
+
     # The Cross Terms
     score_diffs = score[:, None, :] - score[None, :, :]
     cross_dot = np.sum(score_diffs * diffs, axis=-1)
-    
-    term23 = cross_coeff * cross_dot 
-    
+
+    term23 = cross_coeff * cross_dot
+
     #  Combine into the full Stein Kernel matrix (H)
     H = term1 + term23 + trace_term
 
     kgd_sq = np.mean(H)
-    
+
     return float(np.sqrt(max(kgd_sq, 0.0)))

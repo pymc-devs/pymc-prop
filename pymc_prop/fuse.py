@@ -52,9 +52,7 @@ def fuse_grad_energy(raw: np.ndarray) -> float:
     return float(np.mean(np.sum(raw * raw, axis=1)))
 
 
-def fuse_distance(
-    reference_half_step: np.ndarray, current_half_step: np.ndarray
-) -> float:
+def fuse_distance(reference_half_step: np.ndarray, current_half_step: np.ndarray) -> float:
     """Empirical half-step distance between reference and current half-step clouds."""
     diff = reference_half_step - current_half_step
     return float(np.sqrt(np.mean(np.sum(diff * diff, axis=1))))
@@ -128,7 +126,7 @@ def fuse_adaptive_step(
     step_size = state.r_bar / np.sqrt(state.grad_energy + _GRADIENT_ENERGY_FLOOR)
     current_half_step = particles - step_size * scaled  # x_{s-1/2}
     d_next = fuse_distance(state.reference_half_step, current_half_step)  # d_s
-    state.r_bar = max(state.r_bar, max(r_eps, d_next))  # r̄_t
+    state.r_bar = max(state.r_bar, r_eps, d_next)  # r̄_t
 
     diag = FuseStepDiagnostics(
         step_size=step_size,
@@ -154,10 +152,6 @@ def fuse_step_size(
     """
     if state is None:
         # t = 0: initial schedule step (η_0, x_{1/2})
-        return fuse_initial_step(
-            particles, wgf_grad, prior_grad, learning_rate, r_eps
-        )
+        return fuse_initial_step(particles, wgf_grad, prior_grad, learning_rate, r_eps)
     # t ≥ 1: adaptive schedule update (η_t, r̄_t, G_t)
-    return fuse_adaptive_step(
-        particles, wgf_grad, prior_grad, learning_rate, state, r_eps
-    )
+    return fuse_adaptive_step(particles, wgf_grad, prior_grad, learning_rate, state, r_eps)

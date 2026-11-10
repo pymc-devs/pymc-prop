@@ -1,7 +1,7 @@
 import numpy as np
 import pymc as pm
-import pytest
 import pytensor.tensor as pt
+import pytest
 from arviz_base import extract
 from scipy.special import logsumexp
 from xarray import DataTree
@@ -143,7 +143,9 @@ def test_pro_draw_and_step_coords():
     )
 
     np.testing.assert_array_equal(dt.posterior.coords["draw"].values, np.arange(n_steps))
-    np.testing.assert_array_equal(dt.posterior.coords["step"].values, np.arange(tune, tune + n_steps))
+    np.testing.assert_array_equal(
+        dt.posterior.coords["step"].values, np.arange(tune, tune + n_steps)
+    )
 
 
 def test_n_steps_retained_even_when_tune_is_large():
@@ -163,7 +165,9 @@ def test_n_steps_retained_even_when_tune_is_large():
     )
 
     assert dt.posterior.sizes["draw"] == n_steps
-    np.testing.assert_array_equal(dt.posterior.coords["step"].values, np.arange(tune, tune + n_steps))
+    np.testing.assert_array_equal(
+        dt.posterior.coords["step"].values, np.arange(tune, tune + n_steps)
+    )
     assert "log_likelihood" in dt
     assert "sample_stats" in dt
 
@@ -280,7 +284,9 @@ def test_pro_to_datatree_direct_from_sampler():
 
     per_particle = np.sum(dt.log_likelihood["y"].values, axis=-1)
     expected_se = np.std(per_particle, axis=1, ddof=1) / np.sqrt(4)
-    np.testing.assert_allclose(dt.sample_stats["se_log_score"].isel(chain=0).values, expected_se, rtol=1e-8)
+    np.testing.assert_allclose(
+        dt.sample_stats["se_log_score"].isel(chain=0).values, expected_se, rtol=1e-8
+    )
 
 
 def test_single_rv_log_likelihood_matches_compile_observed_logp():
@@ -461,8 +467,7 @@ def test_multi_observed_rv_mixture_log_predictive():
     assert "y1" in dt.mixture_log_predictive
     assert "y2" in dt.mixture_log_predictive
     expected_total = (
-        dt.mixture_log_predictive["y1"].values.sum()
-        + dt.mixture_log_predictive["y2"].values.sum()
+        dt.mixture_log_predictive["y1"].values.sum() + dt.mixture_log_predictive["y2"].values.sum()
     )
     actual_total = dt.sample_stats["mixture_log_predictive_total"].isel(chain=0).values.sum()
     np.testing.assert_allclose(actual_total, expected_total, rtol=1e-8)

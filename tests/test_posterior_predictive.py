@@ -131,7 +131,9 @@ def test_oos_does_not_mutate_posterior():
             tune=0,
             random_seed=6,
         )
-        posterior_before = {name: dt.posterior[name].values.copy() for name in dt.posterior.data_vars}
+        posterior_before = {
+            name: dt.posterior[name].values.copy() for name in dt.posterior.data_vars
+        }
         pm.set_data({"x": x_test}, coords={"trial": np.arange(2)})
         sample_posterior_predictive_pro(dt, model=model, predictions=True)
 
@@ -235,9 +237,7 @@ def test_forward_grid_shape_before_remix():
 
 def test_mixture_remix_matches_manual_isel():
     n_draw, n_chain, n_obs = 3, 4, 2
-    grid_values = np.arange(n_draw * n_chain * n_obs, dtype=float).reshape(
-        n_draw, n_chain, n_obs
-    )
+    grid_values = np.arange(n_draw * n_chain * n_obs, dtype=float).reshape(n_draw, n_chain, n_obs)
     grid = xr.Dataset(
         {"y": (("draw", "chain", "y_dim_0"), grid_values)},
         coords={

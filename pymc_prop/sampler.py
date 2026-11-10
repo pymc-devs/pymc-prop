@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Callable, List
+from collections.abc import Callable
 
 import numpy as np
 
 from pymc_prop.compile import compile_batched_prior_grad
+from pymc_prop.diagnostics import compute_kgd, get_bandwidth, imq_kernel
 from pymc_prop.fuse import (
     FUSE_GRADIENT_ENERGY_STAT,
     FUSE_HALF_STEP_DISTANCE_SQ_STAT,
@@ -15,10 +16,9 @@ from pymc_prop.fuse import (
     fuse_adaptive_step,
     fuse_initial_step,
 )
-from pymc_prop.particles import initialize_particles, time_step, scaled_drift
+from pymc_prop.particles import initialize_particles, scaled_drift, time_step
 from pymc_prop.points import PointMapper
 from pymc_prop.scoring import LogScore, ScoringRule
-from pymc_prop.diagnostics import compute_kgd, get_bandwidth, imq_kernel
 
 
 def run_sampler(
@@ -55,9 +55,7 @@ def run_sampler(
         raise ValueError("n_particles must be at least 2.")
     if step_size is None:
         if r_eps <= 0:
-            raise ValueError(
-                "r_eps must be positive when step_size is None (adaptive schedule)."
-            )
+            raise ValueError("r_eps must be positive when step_size is None (adaptive schedule).")
     elif step_size <= 0:
         raise ValueError("step_size must be positive.")
 
@@ -81,7 +79,7 @@ def run_sampler(
     # (t=0); then mutable state
     fuse_state: FuseState | None = None
 
-    retained: List[np.ndarray] = []
+    retained: list[np.ndarray] = []
 
     kgd_enabled = flow_stats is not None and kgd_interval is not None
     resolved_kgd_bandwidth: float | None = None
@@ -100,9 +98,7 @@ def run_sampler(
         assert wgf_fn is not None
         assert batched_prior_grad_fn is not None
         current_wgf_grad = wgf_fn(current_particles)
-        current_prior_grad = np.asarray(
-            batched_prior_grad_fn(current_particles), dtype=float
-        )
+        current_prior_grad = np.asarray(batched_prior_grad_fn(current_particles), dtype=float)
         return current_wgf_grad, current_prior_grad
 
     total_steps = tune + n_steps
@@ -130,19 +126,19 @@ def run_sampler(
                     r_eps,
                 )
             if fuse_diagnostics is not None and step >= tune:
-                fuse_diagnostics.setdefault(FUSE_GRADIENT_ENERGY_STAT, []).append(diag.gradient_energy)
-                fuse_diagnostics.setdefault(FUSE_HALF_STEP_DISTANCE_SQ_STAT, []).append(diag.half_step_distance_sq)
+                fuse_diagnostics.setdefault(FUSE_GRADIENT_ENERGY_STAT, []).append(
+                    diag.gradient_energy
+                )
+                fuse_diagnostics.setdefault(FUSE_HALF_STEP_DISTANCE_SQ_STAT, []).append(
+                    diag.half_step_distance_sq
+                )
                 fuse_diagnostics.setdefault(FUSE_STEP_SIZE_STAT, []).append(diag.step_size)
 
         particles = time_step(
             particles, prior_grad, wgf_grad, step_size, learning_rate, rng, mapper
         )
 
-        kgd_due = (
-            kgd_enabled
-            and step >= tune
-            and (step - tune) % kgd_interval == 0
-        )
+        kgd_due = kgd_enabled and step >= tune and (step - tune) % kgd_interval == 0
         has_next_step = step + 1 < total_steps
 
         # Evaluate at x[t+1]. These gradients give an aligned KGD for the
@@ -154,9 +150,7 @@ def run_sampler(
             assert flow_stats is not None
             if kgd_due:
                 assert resolved_kgd_bandwidth is not None
-                potential_gradient = scaled_drift(
-                    next_wgf_grad, next_prior_grad, learning_rate
-                )
+                potential_gradient = scaled_drift(next_wgf_grad, next_prior_grad, learning_rate)
                 score = -potential_gradient
                 kernel_to_use = imq_kernel if kgd_kernel is None else kgd_kernel
                 kgd = compute_kgd(

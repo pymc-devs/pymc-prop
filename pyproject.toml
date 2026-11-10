@@ -7,7 +7,7 @@ name = "pymc-prop"
 version = "0.0.0"
 description = "Predictively Oriented posteriors for PyMC"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 authors = [
   { name = "PyMC Developers" }
@@ -35,6 +35,25 @@ examples = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "PL", "UP", "W"]
+ignore = [
+  "PLR2004", # Checks for the use of unnamed numerical constants ("magic") values in comparisons.
+  "PLR0913", # Too many arguments in function definition
+  "PLC0415", # import should be at the top-level
+]
+
+[tool.ruff.lint.pylint]
+max-args = 20
+max-branches = 20
+max-statements = 70
+
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/test_*.py" = ["F841"]
 
 [tool.setuptools.packages.find]
 where = ["."]

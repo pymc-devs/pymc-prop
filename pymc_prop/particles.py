@@ -6,7 +6,6 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-
 from pymc.blocking import DictToArrayBijection
 from pymc.initial_point import make_initial_point_fn
 
@@ -41,8 +40,8 @@ def _init_prior(
         model_logp_fn = logp_fn
 
     population = []
-    for seed in seeds:
-        seed = int(seed)
+    for init_seed in seeds:
+        seed = int(init_seed)
         rng = np.random.default_rng(seed)
         for i in range(max_retries + 1):
             point = ipfn(seed)
@@ -97,9 +96,7 @@ def raw_drift(wgf_grad: np.ndarray, prior_grad: np.ndarray) -> np.ndarray:
     return wgf_grad - prior_grad
 
 
-def scaled_drift(
-    wgf_grad: np.ndarray, prior_grad: np.ndarray, learning_rate: float
-) -> np.ndarray:
+def scaled_drift(wgf_grad: np.ndarray, prior_grad: np.ndarray, learning_rate: float) -> np.ndarray:
     """Deterministic drift passed to :func:`time_step` (includes ``learning_rate``)."""
     return learning_rate * wgf_grad - prior_grad
 

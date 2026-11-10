@@ -22,10 +22,8 @@ from typing import Any
 
 import numpy as np
 import pytensor.tensor as pt
-
 from pymc.logprob.transforms import IntervalTransform, LogOddsTransform, LogTransform
 from pymc.model import modelcontext
-
 
 _ELEMENTWISE_TRANSFORMS = (LogTransform, LogOddsTransform, IntervalTransform)
 
@@ -66,14 +64,10 @@ def call_transform(transform: Any, method: str, value: Any, rv: Any) -> Any:
     return getattr(transform, method)(value, *rv.owner.inputs)
 
 
-def compile_backward_fn(
-    model, rv, transform, value_var
-) -> Callable[[np.ndarray], np.ndarray]:
+def compile_backward_fn(model, rv, transform, value_var) -> Callable[[np.ndarray], np.ndarray]:
     """Compile NumPy ``backward`` for one unconstrained value var."""
     back = call_transform(transform, "backward", value_var, rv)
-    back_fn = model.compile_fn(
-        inputs=[value_var], outs=back, on_unused_input="ignore"
-    )
+    back_fn = model.compile_fn(inputs=[value_var], outs=back, on_unused_input="ignore")
     name = value_var.name
 
     def backward_1d(y_flat: np.ndarray) -> np.ndarray:

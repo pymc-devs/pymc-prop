@@ -10,6 +10,12 @@ __pycache__/
 .coverage.*
 htmlcov/
 
+# Type checker and linter caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
 # Build and packaging outputs
 build/
 dist/

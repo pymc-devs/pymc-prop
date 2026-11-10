@@ -172,18 +172,14 @@ def test_identity_drift_primal_scale_is_one():
     mapper = make_point_mapper(model)
     assert not mapper.has_transforms
     particles = np.array([[0.1], [-0.2], [1.5]])
-    np.testing.assert_array_equal(
-        mapper.primal_scale(particles), np.ones_like(particles)
-    )
+    np.testing.assert_array_equal(mapper.primal_scale(particles), np.ones_like(particles))
 
     point_fn = compile_prior_gradient(model)
     dual_rows = np.stack(
         [np.asarray(point_fn(mapper.unravel(row)), dtype=float) for row in particles],
         axis=0,
     )
-    batched = np.asarray(
-        compile_batched_prior_grad(mapper, model)(particles), dtype=float
-    )
+    batched = np.asarray(compile_batched_prior_grad(mapper, model)(particles), dtype=float)
     _wgf, drift_prior = compile_drift_for_logscore(mapper, model)(particles)
 
     np.testing.assert_allclose(dual_rows, batched, rtol=1e-10, atol=1e-12)

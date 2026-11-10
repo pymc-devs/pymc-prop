@@ -20,7 +20,7 @@ Status: early research code; API and numerics may change.
 
 ## Requirements
 
-- Python ≥ 3.10
+- Python ≥ 3.12
 - [PyMC](https://www.pymc.io/) and [PyTensor](https://pytensor.readthedocs.io/)
 - NumPy; ArviZ and xarray for result containers
 
