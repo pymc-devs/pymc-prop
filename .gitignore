@@ -21,6 +21,7 @@ pip-wheel-metadata/
 venv/
 env/
 .env/
+uv.lock
 
 # Notebook state
 .ipynb_checkpoints/
@@ -32,6 +33,7 @@ Thumbs.db
 .idea/
 
 .cursor/
+.aider*
 AGENTS.md
 docs/
 private/
